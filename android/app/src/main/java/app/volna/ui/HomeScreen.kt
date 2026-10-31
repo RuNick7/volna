@@ -101,7 +101,10 @@ private fun Hero(state: PlayerState, nav: Navigator, modifier: Modifier, onMore:
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        if (text != null) LyricsPanel(text, state) else WaveButton(state)
+        // обложку (или текст на её месте) тоже можно листать свайпом, как название
+        Box((if (track != null) Modifier.trackSwipe() else Modifier), contentAlignment = Alignment.Center) {
+            if (text != null) LyricsPanel(text, state) else WaveButton(state)
+        }
         Spacer(Modifier.height(24.dp))
         // название ведёт к альбому, артист — к артисту; свайп по ним листает треки
         Column(

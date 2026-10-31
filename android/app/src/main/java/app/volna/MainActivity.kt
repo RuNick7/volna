@@ -3,6 +3,7 @@ package app.volna
 import android.Manifest
 import android.app.Activity
 import android.content.ComponentName
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -45,6 +46,7 @@ import app.volna.ui.ConnectScreen
 import app.volna.ui.CoverStyle
 import app.volna.ui.EntityScreen
 import app.volna.ui.HomeScreen
+import app.volna.ui.ImportScreen
 import app.volna.ui.LibraryListScreen
 import app.volna.ui.LibraryScreen
 import app.volna.ui.LocalNav
@@ -78,12 +80,25 @@ class MainActivity : ComponentActivity() {
         UiPrefs.background = app.prefs.background
         UiPrefs.react = app.prefs.react
         UiPrefs.lyrics = app.prefs.lyrics
+        takeShared(intent)
         setContent {
             VolnaTheme {
                 val needLogin by app.api.needLogin.collectAsState()
                 if (needLogin) ConnectScreen() else VolnaRoot()
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        takeShared(intent)
+    }
+
+    /** «Поделиться → Volna» из Spotify или Apple Music: откроем импорт с этой ссылкой. */
+    private fun takeShared(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
+        Shared.url = Regex("""https://\S+""").find(text)?.value
     }
 
     override fun onStart() {
@@ -107,6 +122,10 @@ private fun VolnaRoot() {
     var actionsFor by remember { mutableStateOf<Track?>(null) }
     var tuneOpen by remember { mutableStateOf(false) }
     val activity = LocalContext.current as? Activity
+    LaunchedEffect(Shared.url) {
+        Shared.url?.let { nav.go(Screen.Import(it)) }
+        Shared.url = null
+    }
 
     // «назад» на корне главной сворачивает приложение, а не закрывает: музыка продолжает играть
     BackHandler { if (!nav.back()) activity?.moveTaskToBack(true) }
@@ -125,6 +144,7 @@ private fun VolnaRoot() {
                     is Screen.Entity -> EntityScreen(screen.type, screen.id, nav) { actionsFor = it }
                     is Screen.Mix -> MixScreen(screen.type, screen.id, nav) { actionsFor = it }
                     Screen.Queue -> QueueScreen(nav) { actionsFor = it }
+                    is Screen.Import -> ImportScreen(screen.url, nav)
                     is Screen.SettingsPage -> SettingsPage(screen.key, nav)
                 }
             }
@@ -144,6 +164,11 @@ private fun VolnaRoot() {
             })
         }
     }
+}
+
+/** Ссылка, которой поделились с Volna: её подхватит экран импорта. */
+object Shared {
+    var url by mutableStateOf<String?>(null)
 }
 
 @Composable

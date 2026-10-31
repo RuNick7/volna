@@ -27,6 +27,8 @@ from . import __version__
 from .auth import COOKIE, TOKEN_TTL, Auth, LoginError, client_ip, request_token
 from .config import ServerConfig, Settings, normalize_url
 from .engine import Steer, WaveSession, build_mix, classify, register_playback
+from .explo import Explo, source_of
+from .imports import Importer
 from .library import LibraryIndex, track_json
 from .models import LibrarySnapshot
 from .profile import TasteProfile, build_context_profile, build_profile
@@ -101,6 +103,10 @@ class MixRequest(BaseModel):
 class PlaylistCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     track_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class ImportRequest(BaseModel):
+    url: str
 
 
 class LoginForm(BaseModel):
@@ -230,6 +236,11 @@ class ProfileManager:
     def loaded_index(self) -> LibraryIndex | None:
         return self._index
 
+    def refresh(self) -> LibraryIndex:
+        """Синхронизировать библиотеку сейчас и дождаться (после докачки при импорте)."""
+        self._sync(force=True)
+        return self.index()
+
     # --- профиль вкуса ---
 
     def get(self) -> TasteProfile:
@@ -282,7 +293,7 @@ class Space:
 
     def __init__(self, deps: Deps, user: str = "", defaults: Store | None = None):
         self.deps = deps
-        self.user = user
+        self.user = user  # для импорта: чьи это плейлисты
         self.defaults = defaults  # у основного пространства — настройки времён, когда пользователь был один
         self.profiles = ProfileManager(deps)
         self.sessions: dict[str, WaveSession] = {}
@@ -299,6 +310,21 @@ class Space:
 
     def settings(self) -> WaveSettings:
         return WaveSettings.from_dict(self.setting(SETTINGS_KEY))
+
+    # --- для импорта плейлистов ---
+
+    def index(self, refresh: bool) -> LibraryIndex:
+        return self.profiles.refresh() if refresh else self.profiles.index()
+
+    def create_playlist(self, name: str, track_ids: list[str]):
+        playlist = self.deps.library.create_playlist(name, track_ids)
+        index = self.profiles.loaded_index()
+        if index is not None and playlist.id:
+            index.add_playlist(playlist)
+        return playlist
+
+    def scanning(self) -> bool:
+        return bool(getattr(self.deps.library, "scanning", lambda: False)())
 
     def preferences(self) -> dict:
         return {**DEFAULT_PREFS, **(self.setting(PREFS_KEY) or {})}
@@ -461,6 +487,12 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         return True
 
     auth.verify = navidrome_login
+    importer = (
+        Importer(Explo(settings.explo_url, settings.explo_user, settings.explo_password))
+        if settings.explo_url and settings.explo_user
+        else None
+    )
+    app.state.importer = importer
     open_paths = {"/api/health", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
 
     @app.middleware("http")
@@ -825,6 +857,24 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         if index is not None and playlist.id:
             index.add_playlist(playlist)
         return {"id": playlist.id, "name": playlist.name, "count": len(playlist.track_ids)}
+
+    # --- импорт плейлистов по ссылке ---
+
+    @app.get("/api/imports")
+    def list_imports(sp: Space = Depends(current_space)) -> dict:
+        importer = app.state.importer
+        return {"available": importer is not None, "items": importer.list(sp) if importer else []}
+
+    @app.post("/api/imports")
+    def start_import(body: ImportRequest, sp: Space = Depends(current_space)) -> dict:
+        """Плейлист или альбом Spotify, Apple Music: Explo докачает недостающее, плейлист появится у вас."""
+        importer = app.state.importer
+        if importer is None:
+            raise HTTPException(503, "Импорт не настроен: Volna нужен доступ к Explo")
+        url = body.url.strip()
+        if source_of(url) is None:
+            raise HTTPException(422, "Нужна ссылка на плейлист или альбом Spotify или Apple Music")
+        return importer.start(url, sp).to_dict()
 
     # --- сигналы вне волны ---
 

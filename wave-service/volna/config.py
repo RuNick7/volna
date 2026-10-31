@@ -76,6 +76,9 @@ class Settings:
     port: int = 8765
     force_demo: bool = False  # --demo: не подключаться к сохранённому серверу
     auth: bool = False  # вход аккаунтом Navidrome: обязателен, если сервис открыт в интернет
+    explo_url: str = ""  # Explo для импорта плейлистов по ссылке (Spotify, Apple Music)
+    explo_user: str = ""
+    explo_password: str = ""
 
     @property
     def env_server(self) -> ServerConfig | None:
@@ -107,4 +110,7 @@ class Settings:
             host=env("VOLNA_HOST", "127.0.0.1"),
             port=int(env("VOLNA_PORT", "8765")),
             auth=env("VOLNA_AUTH", "").lower() in ("1", "true", "yes"),
+            explo_url=env("EXPLO_URL", "").rstrip("/"),
+            explo_user=env("EXPLO_USER", ""),
+            explo_password=env("EXPLO_PASSWORD", ""),
         )

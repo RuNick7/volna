@@ -20,6 +20,7 @@ sealed interface Screen {
     data class Mix(val type: String, val id: String) : Screen // плейлист по треку или артисту
     data class SettingsPage(val key: String) : Screen
     data object Queue : Screen
+    data class Import(val url: String = "") : Screen // плейлист из Spotify или Apple Music по ссылке
 }
 
 private fun Screen.tab(): String? = when (this) {

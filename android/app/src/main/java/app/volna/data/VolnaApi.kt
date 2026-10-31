@@ -197,6 +197,8 @@ class VolnaApi(val prefs: Prefs) {
     suspend fun page(type: String, id: String) = Page.from(get("/api/$type/${q(id)}"))
     suspend fun search(query: String) = SearchResult.from(get("/api/search?q=${q(query)}"))
     suspend fun lyrics(trackId: String) = Lyrics.from(get("/api/lyrics/${q(trackId)}"))
+    suspend fun imports() = Imports.from(get("/api/imports"))
+    suspend fun startImport(url: String) = ImportItem.from(post("/api/imports", JSONObject().put("url", url)))
 
     suspend fun mix(type: String, id: String, size: Int) = Mix.from(
         post("/api/mix", JSONObject().put("seed", JSONObject().put("type", type).put("id", id)).put("size", size)),

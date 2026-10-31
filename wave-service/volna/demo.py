@@ -228,6 +228,9 @@ class DemoWorld:
             return Media(206, "audio/wav", headers, [data[start : end + 1]])
         return Media(200, "audio/wav", {"Accept-Ranges": "bytes"}, [data])
 
+    def scanning(self) -> bool:
+        return False
+
     def lyrics(self, track_id: str, artist: str = "", title: str = "") -> dict:
         """Заглушка с синхронизированными строками, чтобы было что показать; у трети треков текста нет."""
         track = self.tracks.get(track_id)

@@ -210,3 +210,40 @@ data class Lyrics(val synced: Boolean, val lines: List<LyricLine>) {
         }
     }
 }
+
+/** Импорт плейлиста по ссылке (Spotify, Apple Music) через Explo на сервере. */
+data class ImportItem(
+    val id: String,
+    val url: String,
+    val status: String, // queued | fetching | downloading | matching | done | failed
+    val name: String,
+    val cover: String,
+    val message: String,
+    val total: Int,
+    val found: Int,
+    val missing: List<String>,
+    val playlistId: String,
+) {
+    val active get() = status !in setOf("done", "failed")
+
+    companion object {
+        fun from(o: JSONObject) = ImportItem(
+            id = o.str("id"),
+            url = o.str("url"),
+            status = o.str("status"),
+            name = o.str("name"),
+            cover = o.str("cover"),
+            message = o.str("message"),
+            total = o.optInt("total"),
+            found = o.optInt("found"),
+            missing = o.optJSONArray("missing")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty(),
+            playlistId = o.str("playlist_id"),
+        )
+    }
+}
+
+data class Imports(val available: Boolean, val items: List<ImportItem>) {
+    companion object {
+        fun from(o: JSONObject) = Imports(o.optBoolean("available"), o.optJSONArray("items").mapObjects(ImportItem::from))
+    }
+}

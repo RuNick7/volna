@@ -10,6 +10,12 @@ services:
       TZ: Europe/Moscow
       # сервис открыт в интернет через Caddy: пускаем только по аккаунту Navidrome
       VOLNA_AUTH: "1"
+      # импорт плейлистов по ссылке (Spotify, Apple Music) через Explo из того же стека
+      EXPLO_URL: http://explo:7288
+    # логин веб-интерфейса Explo (EXPLO_USER, EXPLO_PASSWORD) — в /opt/volna/.env рядом, не в git
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./data:/data
     mem_limit: 1g

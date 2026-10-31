@@ -103,6 +103,10 @@ class Navidrome:
         self.call("ping")
         return True
 
+    def scanning(self) -> bool:
+        """Navidrome сейчас сканирует библиотеку (после докачки новые файлы появятся, когда он закончит)."""
+        return bool(self.call("getScanStatus").get("scanStatus", {}).get("scanning"))
+
     def is_admin(self) -> bool:
         """Администратор Navidrome может менять настройки сервера и в Volna."""
         return bool(self.call("getUser", username=self.user).get("user", {}).get("adminRole"))

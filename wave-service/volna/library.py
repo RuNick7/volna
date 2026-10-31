@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import random
+import re
 import time
+import unicodedata
 from collections import defaultdict
 from datetime import date
 
@@ -16,6 +18,22 @@ FORGOTTEN_AFTER = 60 * DAY
 
 def normalize(text: str) -> str:
     return text.casefold().replace("ё", "е")
+
+
+CYRILLIC = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя", [
+    "a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "i", "k", "l", "m", "n", "o", "p", "r", "s", "t", "u",
+    "f", "h", "ts", "ch", "sh", "sch", "", "i", "", "e", "yu", "ya"]))
+_EXTRA = re.compile(r"\s[-–—]\s.*\b(remaster\w*|version|edit|live|mono|stereo|mix|demo|acoustic)\b.*$")
+
+
+def skeleton(text: str) -> str:
+    """Название для сравнения между источниками: «Song (feat. X) - Remastered 2011» = «Song»,
+    без пунктуации и регистра, кириллица латиницей («Макс Корж» = «Max Korzh»)."""
+    s = re.sub(r"[\(\[].*?[\)\]]", " ", text.casefold())
+    s = _EXTRA.sub("", s)
+    s = "".join(CYRILLIC.get(c, c) for c in s)
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if c.isalnum())
+    return s.replace("kh", "h").replace("x", "ks").replace("y", "i").replace("j", "i")
 
 
 def cover_url(cover_id: str) -> str:
@@ -57,6 +75,7 @@ class LibraryIndex:
         self.album_plays = {aid: sum(t.play_count for t in ts) for aid, ts in self.by_album.items()}
         self.album_last = {aid: max((t.last_played or 0.0) for t in ts) for aid, ts in self.by_album.items()}
         self.artist_plays = {aid: sum(t.play_count for t in ts) for aid, ts in self.by_artist.items()}
+        self._by_title: dict[str, list[Track]] | None = None  # для find(): собирается при первом импорте
         self.albums_by_artist: dict[str, list[Entity]] = defaultdict(list)
         for a in snapshot.albums:
             artist_id = a.artist_id or (self.by_album[a.id][0].artist_id if self.by_album.get(a.id) else "")
@@ -181,6 +200,28 @@ class LibraryIndex:
             "duration": sum(t.duration for t in tracks),
             "tracks": [track_json(t) for t in tracks],
         }
+
+    def find(self, artist: str, title: str, album: str = "") -> Track | None:
+        """Трек из чужого списка (Spotify, Apple Music) в этой библиотеке: то же название и тот же
+        исполнитель с точностью до записи; при нескольких — с тем же альбомом, потом самый слушаемый."""
+        if self._by_title is None:
+            by_title = defaultdict(list)
+            for t in self.snapshot.songs:
+                by_title[skeleton(t.title)].append(t)
+            self._by_title = by_title
+        names = {skeleton(a) for a in re.split(r",|&|;|\bfeat\.?|\bft\.?|\bx\b", artist, flags=re.IGNORECASE)} - {""}
+
+        def credited(t: Track) -> bool:
+            own = skeleton(t.artist)
+            return any(n == own or n in own or own in n for n in names) if own else False
+
+        matched = [t for t in self._by_title.get(skeleton(title), []) if credited(t)]
+        if not matched and " - " in title:  # «Песня - Музыка к фильму …»: в тегах обычно без хвоста
+            matched = [t for t in self._by_title.get(skeleton(title.split(" - ")[0]), []) if credited(t)]
+        if not matched:
+            return None
+        wanted_album = skeleton(album)
+        return max(matched, key=lambda t: (skeleton(t.album) == wanted_album, t.play_count))
 
     # --- поиск и главная ---
 

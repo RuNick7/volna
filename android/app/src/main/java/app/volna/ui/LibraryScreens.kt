@@ -142,6 +142,7 @@ fun LibraryScreen(nav: Navigator) {
                 Tile(VIcons.Album, "Альбомы", count = counts?.optInt("albums")?.toString().orEmpty()) { nav.go(Screen.LibraryList("albums")) }
                 Tile(VIcons.Artist, "Артисты", count = counts?.optInt("artists")?.toString().orEmpty()) { nav.go(Screen.LibraryList("artists")) }
                 Tile(VIcons.Clock, "Недавно слушали") { nav.go(Screen.LibraryList("recent")) }
+                Tile(VIcons.Playlist, "Импорт из Spotify", "Плейлист или альбом по ссылке") { nav.go(Screen.Import()) }
             }
         }
         item { SectionTitle("Недавно добавлены") }
@@ -219,6 +220,11 @@ private fun GridListScreen(kind: String, nav: Navigator) {
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) { PageHeader(title) { nav.back() } }
+        if (kind == "playlists") {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Row(Modifier.padding(bottom = 12.dp)) { Pill("Импорт из Spotify", VIcons.Playlist) { nav.go(Screen.Import()) } }
+            }
+        }
         item(span = { GridItemSpan(maxLineSpan) }) { FilterField(query, "Найти в «$title»") { query = it } }
         if (sorts.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { Chips(sorts, sort) { sort = it } }
         when (val s = items.value) {

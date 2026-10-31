@@ -6,6 +6,7 @@ __pycache__/
 
 # Локальные данные и секреты
 .env
+deploy/.server
 *.db
 wave-service/data/
 

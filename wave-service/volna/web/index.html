@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <title>Volna</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='16' fill='%23000'/%3E%3Cpath d='M5 18c3-5 5-5 8 0s5 5 8 0 4-4 6-1' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <canvas id="topo" class="topo" aria-hidden="true"></canvas>
+
+  <div class="app">
+    <header class="top">
+      <span class="brand">volna</span>
+      <span class="status" id="status" role="status"></span>
+    </header>
+
+    <main class="stage">
+      <button class="wave" id="wave" type="button" aria-label="Запустить «Мою волну»">
+        <span class="wave__ring" aria-hidden="true"></span>
+        <span class="wave__cover" id="cover" aria-hidden="true"></span>
+        <svg class="wave__icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path id="icon" d="M8 5.5v13l10.5-6.5z"/>
+        </svg>
+      </button>
+
+      <div class="caption">
+        <div class="caption__title" id="title">Моя волна</div>
+        <div class="caption__sub" id="sub">Нажмите, и музыка пойдёт сама</div>
+        <div class="caption__reason" id="reason"></div>
+      </div>
+
+      <div class="progress" id="progress" hidden>
+        <div class="progress__bar" id="bar"></div>
+      </div>
+
+      <div class="controls" id="controls" hidden>
+        <button class="ctl" id="dislike" type="button" aria-label="Не нравится" title="Не нравится (D)">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>
+            <path d="M4 4l16 16"/>
+          </svg>
+        </button>
+        <button class="ctl" id="like" type="button" aria-label="Нравится" aria-pressed="false" title="Нравится (L)">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>
+          </svg>
+        </button>
+        <button class="ctl" id="skip" type="button" aria-label="Следующий трек" title="Дальше (→)">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l9 6-9 6z"/>
+            <path d="M18 6v12"/>
+          </svg>
+        </button>
+      </div>
+    </main>
+
+    <footer class="bottom">
+      <div class="modes" id="modes" role="radiogroup" aria-label="Характер волны">
+        <button type="button" role="radio" data-mode="favorite" aria-checked="false">Любимое</button>
+        <button type="button" role="radio" data-mode="balanced" aria-checked="true">Баланс</button>
+        <button type="button" role="radio" data-mode="discover" aria-checked="false">Незнакомое</button>
+      </div>
+      <div class="next" id="next"></div>
+    </footer>
+  </div>
+
+  <audio id="audio" preload="auto"></audio>
+  <script src="/topo.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

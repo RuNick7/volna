@@ -107,9 +107,9 @@ export function toast(text) {
 
 export function prefs() {
   try {
-    return { bg: "live", react: true, colorCovers: false, ...JSON.parse(localStorage.getItem("volna.ui") || "{}") };
+    return { bg: "live", react: true, bwCovers: false, ...JSON.parse(localStorage.getItem("volna.ui") || "{}") };
   } catch {
-    return { bg: "live", react: true, colorCovers: false };
+    return { bg: "live", react: true, bwCovers: false };
   }
 }
 

@@ -201,7 +201,7 @@ document.addEventListener("keydown", (event) => {
 // --- фон и интерфейс ---
 
 function applyInterface(p = prefs()) {
-  document.body.classList.toggle("color-covers", Boolean(p.colorCovers));
+  document.body.classList.toggle("color-covers", !p.bwCovers);  // цветные по умолчанию
   window.Topo?.setMode(p.bg);
   window.Topo?.setEnergySource(p.react ? () => player.loudness() : () => 0);
 }

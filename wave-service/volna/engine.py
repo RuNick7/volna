@@ -194,7 +194,7 @@ class WaveSession:
         self.mult = np.ones(len(taste.clusters))
         self.successes = np.stack([c.successes for c in taste.clusters]).astype(float)
         self.failures = np.stack([c.failures for c in taste.clusters]).astype(float)
-        self.steer_base = self.settings.steer if steer else 0.0
+        self.steer_base = self._steer_target() if steer else 0.0
         self.steer_strength = self.steer_base
         self.steer_mult = np.ones(len(steer.profile.clusters)) if steer else np.ones(0)
         self.session_vec: np.ndarray | None = steer.center if steer else None  # стартуем в сторону источника
@@ -260,12 +260,16 @@ class WaveSession:
         if v is not None:
             self.session_vec = v if self.session_vec is None else unit(0.55 * self.session_vec + 0.45 * v)
 
+    def _steer_target(self) -> float:
+        """Сила смещения из настроек: «только похожее» держит её на максимуме."""
+        return 1.0 if self.settings.similar_only else self.settings.steer
+
     def set_settings(self, settings: WaveSettings) -> None:
         """Применить настройки: текущий трек играет дальше, очередь пересобирается."""
         self.settings = settings
         self.tuning = tune(settings)
         if self.steer:
-            self.steer_base = self.steer_strength = settings.steer
+            self.steer_base = self.steer_strength = self._steer_target()
         self._cluster_fit = None
         self._rebuild_queue()
 
@@ -273,7 +277,7 @@ class WaveSession:
         """«Встряхнуть»: уйти от текущего звучания и пару порций смелее исследовать вкус."""
         if self.current and self.current.id in self.picks:
             self.avoid = self.picks[self.current.id].cluster
-        if self.steer:
+        if self.steer and not self.settings.similar_only:
             self.steer_strength = max(0.15, self.steer_strength * 0.6)
         self.explore_boost = 2
         self.served.clear()
@@ -347,7 +351,8 @@ class WaveSession:
         strong = kind == "dislike"
         self.consecutive_skips += 1
         if from_steer:  # похожее на источник не заходит: меньше держимся за него и за эту его часть
-            self.steer_strength = max(0.15, self.steer_strength * (0.7 if strong else 0.85))
+            if not self.settings.similar_only:  # «только похожее» не разбавляем своим вкусом
+                self.steer_strength = max(0.15, self.steer_strength * (0.7 if strong else 0.85))
             self.steer_mult[pick.group] *= 0.6 if strong else 0.75
         if cluster is not None:
             self.mult[cluster] *= 0.4 if strong else 0.6

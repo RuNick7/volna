@@ -252,6 +252,30 @@ class Navidrome:
         return Playlist(id=str(created.get("id", "")), name=created.get("name", name),
                         track_ids=list(track_ids), changed=time.time())
 
+    def lyrics(self, track_id: str, artist: str = "", title: str = "") -> dict:
+        """Текст песни: по строкам с временем, если он синхронизирован, иначе просто строки.
+
+        Navidrome берёт его из .lrc/.ttml рядом с файлом, из тегов или плагина текстов.
+        """
+        try:
+            found = self.call("getLyricsBySongId", id=track_id).get("lyricsList", {}).get("structuredLyrics", [])
+        except (SubsonicError, httpx.HTTPStatusError):
+            found = []  # сервер без расширений OpenSubsonic
+        if found:
+            best = next((item for item in found if item.get("synced")), found[0])
+            synced = bool(best.get("synced"))
+            offset = best.get("offset") or 0  # как в LRC: положительный сдвиг показывает строки раньше
+            lines = [
+                {"time": max(0.0, (line["start"] - offset) / 1000) if synced and "start" in line else None,
+                 "text": line.get("value", "")}
+                for line in best.get("line", [])
+            ]
+            return {"synced": synced, "lines": lines}
+        if artist and title:
+            text = self.call("getLyrics", artist=artist, title=title).get("lyrics", {}).get("value", "")
+            return {"synced": False, "lines": [{"time": None, "text": line} for line in text.splitlines()]}
+        return {"synced": False, "lines": []}
+
     # --- медиа ---
 
     def stream(self, track_id: str, range_header: str | None = None, max_bitrate: int = 0) -> Media:

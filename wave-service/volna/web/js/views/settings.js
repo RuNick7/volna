@@ -219,7 +219,7 @@ function interfacePage(root, { applyInterface }) {
     ),
     group(null,
       toggle("Линии реагируют на музыку", p.react, (v) => update({ react: v })),
-      toggle("Цветные обложки", p.colorCovers, (v) => update({ colorCovers: v })),
+      toggle("Чёрно-белые обложки", p.bwCovers, (v) => update({ bwCovers: v })),
     ),
   );
 }

@@ -22,6 +22,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
@@ -170,15 +172,18 @@ private fun TrackListScreen(kind: String, nav: Navigator, onMore: (Track) -> Uni
     val title = if (kind == "liked") "Мне нравится" else "Недавно слушали"
     val playing by VolnaPlayer.state.collectAsState()
     val tracks = load(kind) { if (kind == "liked") VolnaPlayer.api.liked() else VolnaPlayer.api.recent() }
+    var query by rememberSaveable(kind) { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(horizontal = 16.dp)) {
         item { PageHeader(title) { nav.back() } }
+        item { FilterField(query, "Найти в «$title»") { query = it } }
         when (val s = tracks.value) {
             Load.Loading -> item { Loading() }
             is Load.Failed -> item { Empty(s.message) }
             is Load.Done -> {
-                val list = s.value
+                val list = s.value.filter { matches(query, it.title, it.artist, it.album) }
                 val context = PlayContext("library", kind, title)
-                if (list.isEmpty()) item { Empty(if (kind == "liked") "Отмечайте треки сердцем — они соберутся здесь." else "История пока пуста.") }
+                if (s.value.isEmpty()) item { Empty(if (kind == "liked") "Отмечайте треки сердцем — они соберутся здесь." else "История пока пуста.") }
+                else if (list.isEmpty()) item { Empty("Ничего не нашлось.") }
                 else item { PlayActions(list, context) }
                 itemsIndexed(list, key = { _, t -> t.id }) { i, track ->
                     TrackRow(track, playing.track?.id == track.id, onMore = onMore) { VolnaPlayer.playList(list, i, context) }
@@ -198,6 +203,7 @@ private fun GridListScreen(kind: String, nav: Navigator) {
         else -> emptyList()
     }
     var sort by rememberSaveable(kind) { mutableStateOf("alpha") }
+    var query by rememberSaveable(kind) { mutableStateOf("") }
     val items = load(kind, sort) {
         when (kind) {
             "albums" -> VolnaPlayer.api.albums(sort)
@@ -213,13 +219,16 @@ private fun GridListScreen(kind: String, nav: Navigator) {
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) { PageHeader(title) { nav.back() } }
+        item(span = { GridItemSpan(maxLineSpan) }) { FilterField(query, "Найти в «$title»") { query = it } }
         if (sorts.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { Chips(sorts, sort) { sort = it } }
         when (val s = items.value) {
             Load.Loading -> item(span = { GridItemSpan(maxLineSpan) }) { Loading() }
             is Load.Failed -> item(span = { GridItemSpan(maxLineSpan) }) { Empty(s.message) }
             is Load.Done -> {
+                val found = s.value.filter { matches(query, it.title, it.subtitle) }
                 if (s.value.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { Empty("Здесь пока пусто.") }
-                items(s.value, key = { it.type + it.id }) { item -> ItemCard(item) { nav.go(Screen.Entity(item.type, item.id)) } }
+                else if (found.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { Empty("Ничего не нашлось.") }
+                items(found, key = { it.type + it.id }) { item -> ItemCard(item) { nav.go(Screen.Entity(item.type, item.id)) } }
             }
         }
         item(span = { GridItemSpan(maxLineSpan) }) { Spacer(Modifier.height(24.dp)) }
@@ -248,6 +257,8 @@ fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Un
     val playing by VolnaPlayer.state.collectAsState()
     val page = load(type, id) { VolnaPlayer.api.page(type, id) }
     var liked by remember(type, id) { mutableStateOf<Boolean?>(null) }
+    var allTracks by rememberSaveable(type, id) { mutableStateOf(false) }
+    var allAlbums by rememberSaveable(type, id) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(horizontal = 16.dp)) {
         item { PageHeader("") { nav.back() } }
@@ -259,7 +270,8 @@ fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Un
                 val isLiked = liked ?: p.item.liked
                 item { EntityHeader(p, type) }
                 val context = PlayContext(type, id, p.item.title)
-                val tracks = if (type == "artist") p.top else p.tracks
+                // у артиста — все треки по популярности: сначала пять, остальные по кнопке
+                val tracks = if (type == "artist") p.tracks.ifEmpty { p.top } else p.tracks
                 item {
                     if (type == "artist") {
                         FlowRow(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -284,7 +296,8 @@ fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Un
                     }
                 }
                 if (type == "artist" && tracks.isNotEmpty()) item { SectionTitle("Популярные треки") }
-                itemsIndexed(tracks, key = { _, t -> t.id }) { i, track ->
+                val shown = if (type == "artist" && !allTracks) tracks.take(ARTIST_TRACKS) else tracks
+                itemsIndexed(shown, key = { _, t -> t.id }) { i, track ->
                     TrackRow(
                         track,
                         playing.track?.id == track.id,
@@ -293,14 +306,53 @@ fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Un
                         onMore = onMore,
                     ) { VolnaPlayer.playList(tracks, i, context) }
                 }
+                if (type == "artist" && tracks.size > ARTIST_TRACKS) {
+                    item { ShowMore(allTracks, "Все треки · ${tracks.size}") { allTracks = !allTracks } }
+                }
                 if (type == "artist" && p.albums.isNotEmpty()) {
                     item { SectionTitle("Альбомы") }
-                    item { ItemGrid(p.albums, columns = 2) { nav.go(Screen.Entity(it.type, it.id)) } }
+                    item {
+                        ItemGrid(if (allAlbums) p.albums else p.albums.take(ARTIST_ALBUMS), columns = 2) { nav.go(Screen.Entity(it.type, it.id)) }
+                    }
+                    if (p.albums.size > ARTIST_ALBUMS) item { ShowMore(allAlbums, "Все альбомы · ${p.albums.size}") { allAlbums = !allAlbums } }
                 }
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
     }
+}
+
+private const val ARTIST_TRACKS = 5
+private const val ARTIST_ALBUMS = 4
+
+/** «Показать все · N» / «Свернуть» под длинным списком. */
+@Composable
+private fun ShowMore(expanded: Boolean, label: String, onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.Center) {
+        Pill(if (expanded) "Свернуть" else label, onClick = onClick)
+    }
+}
+
+/** Поиск внутри раздела коллекции: фильтрует то, что уже загружено, сразу при вводе. */
+@Composable
+private fun FilterField(query: String, placeholder: String, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onChange,
+        singleLine = true,
+        placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        leadingIcon = { VIcon(VIcons.Search, null, 20.dp, Palette.Muted) },
+        trailingIcon = if (query.isNotEmpty()) ({ IconButtonV(VIcons.Close, "Очистить", 36.dp) { onChange("") } }) else null,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, autoCorrectEnabled = false),
+        colors = textFieldColors(),
+        shape = RoundedCornerShape(50),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+    )
+}
+
+private fun matches(query: String, vararg fields: String): Boolean {
+    val q = query.trim().lowercase().replace('ё', 'е')
+    return q.isEmpty() || fields.any { it.lowercase().replace('ё', 'е').contains(q) }
 }
 
 @Composable
@@ -326,7 +378,16 @@ private fun EntityHeader(p: Page, type: String) {
         Spacer(Modifier.height(16.dp))
         Text(kind.uppercase(), style = MaterialTheme.typography.labelSmall, color = Palette.Muted)
         Text(p.item.title, style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 6.dp))
-        if (type == "album" && p.item.subtitle.isNotEmpty()) Text(p.item.subtitle, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 4.dp))
+        if (type == "album" && p.item.subtitle.isNotEmpty()) {
+            val nav = LocalNav.current
+            Text(
+                p.item.subtitle,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(top = 4.dp).then(
+                    if (nav != null && p.item.artistId.isNotEmpty()) Modifier.clickable { nav.go(Screen.Entity("artist", p.item.artistId)) } else Modifier,
+                ),
+            )
+        }
         Text(meta.joinToString(" · "), style = MaterialTheme.typography.bodyMedium, color = Palette.Muted, modifier = Modifier.padding(top = 4.dp))
     }
 }

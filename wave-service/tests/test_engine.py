@@ -167,6 +167,22 @@ def test_skipping_track_like_songs_weakens_the_shift(world_deps):
     assert session.steer_strength < 0.8 * 0.7
 
 
+def test_similar_only_wave_never_falls_back_to_taste(world_deps):
+    world, deps = world_deps
+    taste = build_profile(deps)
+    tid = next(i for i in world.ids if world.genre[i] == 7)
+    steer = Steer(build_context_profile(deps, [tid], taste), "track", tid, "трек")
+    session = WaveSession(deps, taste, WaveSettings(similar_only=True), steer=steer, exclude=[tid], seed=1)
+    track = session.start()
+    origins = []
+    for i in range(12):
+        origins.append(session.picks[track.id].origin)
+        outcome = "skip" if i % 2 else "complete"  # пропуски не возвращают в волну «своё»
+        track = session.advance(track.id, outcome, position=4 if outcome == "skip" else track.duration,
+                                duration=track.duration)
+    assert set(origins) == {"steer"} and session.steer_strength == 1.0
+
+
 # --- настройки и сигналы ---
 
 def _serve(settings, seeds=(0, 1), n=20, prepare=None):

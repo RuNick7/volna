@@ -38,6 +38,17 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontWeight
+import app.volna.data.Lyrics
 import app.volna.data.Track
 import app.volna.player.PlayContext
 import app.volna.player.PlayerState
@@ -53,7 +64,7 @@ fun HomeScreen(nav: Navigator, onMore: (Track) -> Unit, onTune: () -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val heroHeight = maxHeight
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp)) {
-            item { Hero(state, Modifier.height(heroHeight), onMore, onTune) }
+            item { Hero(state, nav, Modifier.height(heroHeight), onMore, onTune) }
             when (val s = shelves.value) {
                 Load.Loading -> item { Loading() }
                 is Load.Failed -> item { Empty("Полки недоступны: ${s.message}") }
@@ -81,59 +92,77 @@ fun HomeScreen(nav: Navigator, onMore: (Track) -> Unit, onTune: () -> Unit) {
 }
 
 @Composable
-private fun Hero(state: PlayerState, modifier: Modifier, onMore: (Track) -> Unit, onTune: () -> Unit) {
+private fun Hero(state: PlayerState, nav: Navigator, modifier: Modifier, onMore: (Track) -> Unit, onTune: () -> Unit) {
     val track = state.track
-    Column(modifier.fillMaxWidth().statusBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("volna", style = MaterialTheme.typography.titleMedium.copy(letterSpacing = 6.sp))
-        }
+    val lyrics = if (track != null && UiPrefs.lyrics) load("lyrics", track.id) { VolnaPlayer.api.lyrics(track.id) }.value else null
+    val text = (lyrics as? Load.Done)?.value?.takeIf { it.lines.isNotEmpty() }
+    Column(
+        modifier.fillMaxWidth().statusBarsPadding(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        if (text != null) LyricsPanel(text, state) else WaveButton(state)
+        Spacer(Modifier.height(24.dp))
+        // название ведёт к альбому, артист — к артисту; свайп по ним листает треки
         Column(
-            Modifier.fillMaxWidth().weight(1f),
+            (if (track != null) Modifier.trackSwipe() else Modifier).fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
         ) {
-            WaveButton(state)
-            Spacer(Modifier.height(28.dp))
             Text(
                 track?.title ?: "Моя волна",
                 style = MaterialTheme.typography.headlineMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
+                modifier = if (track != null && track.albumId.isNotEmpty()) {
+                    Modifier.clickable { nav.go(Screen.Entity("album", track.albumId)) }
+                } else Modifier,
             )
             Spacer(Modifier.height(6.dp))
-            Text(
-                when {
-                    track != null -> track.artist
-                    state.loading -> "Настраиваю волну под ваш вкус…"
-                    else -> "Нажмите, и музыка пойдёт сама"
-                },
-                style = MaterialTheme.typography.bodyLarge,
-                color = Palette.Muted,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                if (track != null) state.reason else "",
-                style = MaterialTheme.typography.bodySmall,
-                color = Palette.Muted.copy(alpha = 0.47f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 10.dp).height(18.dp),
-            )
             if (track != null) {
-                Spacer(Modifier.height(18.dp))
-                Progress(state)
-                Spacer(Modifier.height(22.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Control(VIcons.Dislike, "Не нравится") { VolnaPlayer.next("dislike") }
-                    Control(VIcons.Prev, "Назад") { VolnaPlayer.previous() }
-                    Control(if (track.liked) VIcons.HeartFilled else VIcons.Heart, "Нравится", pressed = track.liked) { VolnaPlayer.like() }
-                    Control(VIcons.Next, "Дальше") { VolnaPlayer.next("skip") }
-                    Control(VIcons.More, "Ещё: волна и плейлист по треку") { onMore(track) }
+                ArtistLink(track, style = MaterialTheme.typography.bodyLarge)
+            } else {
+                Text(
+                    if (state.loading) "Настраиваю волну под ваш вкус…" else "Нажмите, и музыка пойдёт сама",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Palette.Muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Text(
+            if (track != null) state.reason else "",
+            style = MaterialTheme.typography.bodySmall,
+            color = Palette.Muted.copy(alpha = 0.47f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 10.dp).height(18.dp),
+        )
+        if (track != null) {
+            Spacer(Modifier.height(16.dp))
+            Progress(state)
+            Spacer(Modifier.height(18.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Control(VIcons.Dislike, "Не нравится") { VolnaPlayer.next("dislike") }
+                Control(VIcons.Prev, "Назад") { VolnaPlayer.previous() }
+                Control(if (state.playing) VIcons.Pause else VIcons.Play, if (state.playing) "Пауза" else "Играть", primary = true) {
+                    VolnaPlayer.toggle()
+                }
+                Control(VIcons.Next, "Дальше") { VolnaPlayer.next("skip") }
+                Control(if (track.liked) VIcons.HeartFilled else VIcons.Heart, "Нравится", pressed = track.liked) { VolnaPlayer.like() }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (track != null) {
+                IconButtonV(VIcons.Lyrics, if (UiPrefs.lyrics) "Скрыть текст" else "Показать текст", 44.dp,
+                    tint = if (UiPrefs.lyrics) Palette.Fg else Palette.Muted) {
+                    UiPrefs.lyrics = !UiPrefs.lyrics
+                    VolnaPlayer.api.prefs.lyrics = UiPrefs.lyrics
+                    if (UiPrefs.lyrics && (lyrics as? Load.Done)?.value?.lines?.isEmpty() == true) VolnaPlayer.say("У этого трека нет текста")
                 }
             }
-            Spacer(Modifier.height(24.dp))
             if (track != null && state.mode == "list") {
                 Pill("Включить Мою волну", VIcons.Wave) { VolnaPlayer.startWave() }
             } else {
@@ -141,16 +170,67 @@ private fun Hero(state: PlayerState, modifier: Modifier, onMore: (Track) -> Unit
                 val summary = waveSummary(state.settings)
                 Pill(if (steered) "По «${state.title}» · $summary" else summary, VIcons.Sliders, onClick = onTune)
             }
-            state.nextUp?.let { next ->
-                Text(
-                    "Дальше: ${next.title} · ${next.artist}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Palette.Muted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 12.dp),
+            if (track != null) IconButtonV(VIcons.More, "Ещё: волна и плейлист по треку", 44.dp, tint = Palette.Fg) { onMore(track) }
+        }
+        state.nextUp?.let { next ->
+            Text(
+                "Дальше: ${next.title} · ${next.artist}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Palette.Muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Текст песни на месте круга. Синхронизированный подсвечивает текущую строку и сам
+ * прокручивается; нажатие на строку перематывает к ней.
+ */
+@Composable
+private fun LyricsPanel(lyrics: Lyrics, state: PlayerState) {
+    val list = rememberLazyListState()
+    val position = state.positionMs / 1000.0
+    val current = if (lyrics.synced) lyrics.lines.indexOfLast { (it.time ?: 0.0) <= position + 0.25 } else -1
+    LaunchedEffect(current) { if (current >= 0) list.animateScrollToItem((current - 2).coerceAtLeast(0)) }
+    LazyColumn(
+        state = list,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        contentPadding = PaddingValues(vertical = 40.dp),
+        modifier = Modifier
+            .widthIn(max = 360.dp)
+            .fillMaxWidth()
+            .height(252.dp)
+            .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+            .drawWithContent {
+                drawContent()
+                // края растворяются, чтобы строки уходили в фон, а не обрезались
+                drawRect(
+                    Brush.verticalGradient(0f to Color.Transparent, 0.18f to Color.Black, 0.82f to Color.Black, 1f to Color.Transparent),
+                    blendMode = BlendMode.DstIn,
                 )
-            }
+            },
+    ) {
+        itemsIndexed(lyrics.lines) { i, line ->
+            val active = i == current
+            val seekable = lyrics.synced && line.time != null && state.durationMs > 0
+            Text(
+                line.text.ifBlank { "♪" },
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, lineHeight = 25.sp),
+                fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                color = when {
+                    !lyrics.synced || active -> Palette.Fg
+                    i < current -> Palette.Muted.copy(alpha = 0.35f)
+                    else -> Palette.Muted
+                },
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = seekable) { VolnaPlayer.seek((line.time!! * 1000 / state.durationMs).toFloat()) }
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+            )
         }
     }
 }

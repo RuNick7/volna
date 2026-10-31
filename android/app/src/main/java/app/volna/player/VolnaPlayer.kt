@@ -9,7 +9,11 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.audio.TeeAudioProcessor
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import app.volna.data.ApiException
 import app.volna.data.Track
@@ -83,7 +87,12 @@ object VolnaPlayer {
     fun init(context: Context, api: VolnaApi) {
         if (::exo.isInitialized) return
         this.api = api
-        exo = ExoPlayer.Builder(context)
+        // звук проходит через «тройник»: ExoPlayer играет его как обычно, а AudioLevel меряет громкость для фона
+        val renderers = object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
+                DefaultAudioSink.Builder(context).setAudioProcessors(arrayOf(TeeAudioProcessor(AudioLevel))).build()
+        }
+        exo = ExoPlayer.Builder(context, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(api.client))) // звук тоже с токеном
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
@@ -209,9 +218,10 @@ object VolnaPlayer {
     }
 
     /** «Назад»: в начало трека, если он играет дольше 3 секунд, иначе — к предыдущему. */
-    fun previous() {
+    /** «Назад»: после первых трёх секунд кнопка сначала перематывает трек в начало, свайп — нет. */
+    fun previous(restartFirst: Boolean = true) {
         val track = current ?: return
-        if (exo.currentPosition > 3000) {
+        if (restartFirst && exo.currentPosition > 3000) {
             exo.seekTo(0)
             return
         }

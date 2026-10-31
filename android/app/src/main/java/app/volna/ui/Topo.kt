@@ -8,6 +8,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Modifier
@@ -15,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
+import app.volna.player.AudioLevel
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
@@ -39,7 +41,11 @@ fun Topo(modifier: Modifier = Modifier, mode: String = "live", dim: Boolean = fa
         else -> 1f
     }
     val alpha by animateFloatAsState(if (dim) modeAlpha * 0.4f else modeAlpha, tween(600), label = "topo-dim")
-    val energy by animateFloatAsState(if (playing) 0.35f else 0f, tween(1200), label = "topo-energy")
+    val idle by animateFloatAsState(if (playing) 0.35f else 0f, tween(1200), label = "topo-energy")
+    // «линии под музыку»: вместо ровного течения волна дышит громкостью того, что играет
+    val react by rememberUpdatedState(UiPrefs.react && playing)
+    var loud by remember { mutableFloatStateOf(0f) }
+    val energy = if (react) loud else idle
     var time by remember { mutableFloatStateOf((Math.random() * 100).toFloat()) }
     val step = with(LocalDensity.current) { 12f * density }
 
@@ -49,6 +55,7 @@ fun Topo(modifier: Modifier = Modifier, mode: String = "live", dim: Boolean = fa
         while (true) {
             val now = withFrameMillis { it }
             if (now - last >= 33) { // ~30 кадров в секунду достаточно и бережёт батарею
+                loud += ((if (react) AudioLevel.level else 0f) - loud) * 0.22f
                 time += min((now - last) / 1000f, 0.1f) * (0.5f + energy * 2.2f) * speed
                 last = now
             }

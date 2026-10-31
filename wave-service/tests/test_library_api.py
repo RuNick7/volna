@@ -112,3 +112,29 @@ def test_normalize_url():
     assert normalize_url(" music.example.com/ ") == "https://music.example.com"
     assert normalize_url("192.168.1.5:4533") == "http://192.168.1.5:4533"
     assert normalize_url("http://nas.local:4533") == "http://nas.local:4533"
+
+
+def test_lyrics_and_full_artist_tracks(client):
+    track = client.post("/api/wave/start", json={}).json()["track"]
+    lyrics = client.get(f"/api/lyrics/{track['id']}").json()
+    assert set(lyrics) == {"synced", "lines"}
+
+    artist = client.get(f"/api/artist/{track['artist_id']}").json()
+    assert len(artist["tracks"]) >= len(artist["top"]) and len(artist["top"]) <= 10
+
+
+def test_navidrome_lyrics_prefer_synced(monkeypatch):
+    from volna.navidrome import Navidrome
+    from volna.store import Store
+
+    structured = {"lyricsList": {"structuredLyrics": [
+        {"synced": False, "line": [{"value": "plain"}]},
+        {"synced": True, "offset": 500, "line": [{"start": 1500, "value": "first"}, {"start": 4000, "value": "second"}]},
+    ]}}
+    nd = Navidrome("http://nd", "u", "p", Store(":memory:"))
+    monkeypatch.setattr(nd, "call", lambda endpoint, **params: structured)
+    assert nd.lyrics("t1") == {"synced": True, "lines": [{"time": 1.0, "text": "first"}, {"time": 3.5, "text": "second"}]}
+
+    plain = {"getLyricsBySongId": {"lyricsList": {}}, "getLyrics": {"lyrics": {"value": "a\nb"}}}
+    monkeypatch.setattr(nd, "call", lambda endpoint, **params: plain[endpoint])
+    assert nd.lyrics("t1", "Artist", "Song")["lines"] == [{"time": None, "text": "a"}, {"time": None, "text": "b"}]

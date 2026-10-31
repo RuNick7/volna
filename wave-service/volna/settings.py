@@ -52,6 +52,7 @@ class WaveSettings:
     repeat_days: float | None = None  # не повторять треки, игравшие за N дней; None — по характеру
     context_aware: bool = True  # учитывать время суток и будни/выходные
     steer: float = 0.65  # волна по треку или плейлисту: доля похожего на источник (остальное — ваш вкус)
+    similar_only: bool = False  # волна по треку или плейлисту: только похожее на источник, без вашего вкуса
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "WaveSettings":
@@ -70,6 +71,7 @@ class WaveSettings:
         s.repeat_days = None if s.repeat_days is None else _clip(s.repeat_days, 0.0, 90.0)
         s.context_aware = bool(s.context_aware)
         s.steer = _clip(s.steer, 0.1, 0.95)
+        s.similar_only = bool(s.similar_only)
         return s
 
     def to_dict(self) -> dict:

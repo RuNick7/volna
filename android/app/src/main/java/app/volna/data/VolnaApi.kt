@@ -19,7 +19,7 @@ import javax.net.ssl.SSLException
 class ApiException(val code: Int, message: String) : IOException(message)
 
 /** HTTP API сервиса Volna: тот же, что у веб-версии. */
-class VolnaApi(private val prefs: Prefs) {
+class VolnaApi(val prefs: Prefs) {
     /** Нужно войти: входа ещё не было или сервис перестал принимать токен. */
     val needLogin = MutableStateFlow(!prefs.connected)
 
@@ -189,13 +189,14 @@ class VolnaApi(private val prefs: Prefs) {
     }
 
     suspend fun libraryStats(): JSONObject = get("/api/library")
-    suspend fun albums(sort: String) = Item.list(get("/api/library/albums?sort=$sort&limit=300").optJSONArray("items"))
-    suspend fun artists(sort: String) = Item.list(get("/api/library/artists?sort=$sort&limit=300").optJSONArray("items"))
+    suspend fun albums(sort: String) = Item.list(get("/api/library/albums?sort=$sort&limit=5000").optJSONArray("items"))
+    suspend fun artists(sort: String) = Item.list(get("/api/library/artists?sort=$sort&limit=5000").optJSONArray("items"))
     suspend fun playlists() = Item.list(get("/api/library/playlists").optJSONArray("items"))
     suspend fun liked() = Track.list(get("/api/library/liked").optJSONArray("tracks"))
     suspend fun recent() = Track.list(get("/api/library/recent").optJSONArray("tracks"))
     suspend fun page(type: String, id: String) = Page.from(get("/api/$type/${q(id)}"))
     suspend fun search(query: String) = SearchResult.from(get("/api/search?q=${q(query)}"))
+    suspend fun lyrics(trackId: String) = Lyrics.from(get("/api/lyrics/${q(trackId)}"))
 
     suspend fun mix(type: String, id: String, size: Int) = Mix.from(
         post("/api/mix", JSONObject().put("seed", JSONObject().put("type", type).put("id", id)).put("size", size)),

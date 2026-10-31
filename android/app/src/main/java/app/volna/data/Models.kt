@@ -194,3 +194,17 @@ data class ServerInfo(
         }
     }
 }
+
+/** Строка текста песни; time — секунда начала, если текст синхронизирован. */
+data class LyricLine(val time: Double?, val text: String)
+
+data class Lyrics(val synced: Boolean, val lines: List<LyricLine>) {
+    companion object {
+        fun from(o: JSONObject): Lyrics {
+            val lines = o.optJSONArray("lines").mapObjects { line ->
+                LyricLine(if (line.isNull("time")) null else line.optDouble("time"), line.str("text"))
+            }
+            return Lyrics(o.optBoolean("synced") && lines.all { it.time != null }, lines)
+        }
+    }
+}

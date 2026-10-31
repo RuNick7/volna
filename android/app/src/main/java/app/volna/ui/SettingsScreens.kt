@@ -269,6 +269,7 @@ private fun InterfacePage() {
     val app = LocalContext.current.applicationContext as VolnaApp
     var background by remember { mutableStateOf(app.prefs.background) }
     var color by remember { mutableStateOf(app.prefs.colorCovers) }
+    var react by remember { mutableStateOf(app.prefs.react) }
     GroupLabel("Фон")
     Chips(listOf("live" to "Живые линии", "calm" to "Спокойные", "off" to "Без линий"), background) {
         background = it
@@ -277,10 +278,17 @@ private fun InterfacePage() {
     }
     Hint("Топографические линии текут волной. «Спокойные» — медленнее и тише, меньше нагружают телефон.")
     Spacer(Modifier.height(12.dp))
-    ToggleRow("Цветные обложки", color) {
-        color = it
-        app.prefs.colorCovers = it
-        CoverStyle.color = it
+    ToggleRow("Линии реагируют на музыку", react) {
+        react = it
+        app.prefs.react = it
+        UiPrefs.react = it
+    }
+    Hint("Чем громче играет, тем выше и быстрее волна на фоне.")
+    Spacer(Modifier.height(12.dp))
+    ToggleRow("Чёрно-белые обложки", !color) {
+        color = !it
+        app.prefs.colorCovers = !it
+        CoverStyle.color = !it
     }
 }
 
@@ -342,6 +350,8 @@ private fun AboutPage() {
 /** Настройки интерфейса, которые читает App: фон. Обложки — в CoverStyle. */
 object UiPrefs {
     var background by mutableStateOf("live")
+    var react by mutableStateOf(true)
+    var lyrics by mutableStateOf(false)
 }
 
 private fun accountSubtitle(app: VolnaApp): String {

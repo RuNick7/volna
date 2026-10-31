@@ -161,11 +161,12 @@ class LibraryIndex:
             return None
         if artist is None:
             artist = Entity(artist_id, tracks[0].artist)
-        top = sorted(tracks, key=lambda t: (-t.play_count, -(t.last_played or 0)))[:10]
+        popular = sorted(tracks, key=lambda t: (-t.play_count, -(t.last_played or 0), normalize(t.title)))
         albums = sorted(self.albums_by_artist.get(artist_id, []), key=lambda a: -a.year)
         return {
             **self.artist_json(artist),
-            "top": [track_json(t) for t in top],
+            "top": [track_json(t) for t in popular[:10]],
+            "tracks": [track_json(t) for t in popular],  # все треки: в приложении раскрываются по кнопке
             "albums": [self.album_json(a) for a in albums],
             "plays": self.artist_plays.get(artist_id, 0),
         }

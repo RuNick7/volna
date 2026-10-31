@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -46,6 +47,7 @@ import app.volna.ui.EntityScreen
 import app.volna.ui.HomeScreen
 import app.volna.ui.LibraryListScreen
 import app.volna.ui.LibraryScreen
+import app.volna.ui.LocalNav
 import app.volna.ui.MiniPlayer
 import app.volna.ui.MixScreen
 import app.volna.ui.Navigator
@@ -73,6 +75,8 @@ class MainActivity : ComponentActivity() {
         val app = application as VolnaApp
         CoverStyle.color = app.prefs.colorCovers
         UiPrefs.background = app.prefs.background
+        UiPrefs.react = app.prefs.react
+        UiPrefs.lyrics = app.prefs.lyrics
         setContent {
             VolnaTheme {
                 val needLogin by app.api.needLogin.collectAsState()
@@ -107,7 +111,7 @@ private fun VolnaRoot() {
     BackHandler { if (!nav.back()) activity?.moveTaskToBack(true) }
     AskNotifications()
 
-    Box(Modifier.fillMaxSize().background(Palette.Bg)) {
+    CompositionLocalProvider(LocalNav provides nav) { Box(Modifier.fillMaxSize().background(Palette.Bg)) {
         Topo(Modifier.fillMaxSize(), mode = UiPrefs.background, dim = nav.current != Screen.Home, playing = state.playing)
         Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f)) {
@@ -126,7 +130,7 @@ private fun VolnaRoot() {
             TabBar(nav.tab) { nav.tab(it) }
         }
         Toast(state.message, Modifier.align(Alignment.BottomCenter).padding(bottom = 150.dp))
-    }
+    } }
 
     actionsFor?.let { track -> TrackActions(track, onDismiss = { actionsFor = null }, navigate = nav::go) }
     if (tuneOpen) {

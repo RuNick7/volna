@@ -35,9 +35,20 @@ class Prefs(context: Context) {
         get() = prefs.getString("background", "live") ?: "live"
         set(value) = prefs.edit().putString("background", value).apply()
 
+    /** Цветные обложки по умолчанию; ч/б включается в настройках интерфейса. */
     var colorCovers: Boolean
-        get() = prefs.getBoolean("color_covers", false)
-        set(value) = prefs.edit().putBoolean("color_covers", value).apply()
+        get() = prefs.getBoolean("covers_in_color", true)
+        set(value) = prefs.edit().putBoolean("covers_in_color", value).apply()
+
+    /** Линии на фоне «дышат» под громкость музыки. */
+    var react: Boolean
+        get() = prefs.getBoolean("react", true)
+        set(value) = prefs.edit().putBoolean("react", value).apply()
+
+    /** Показывать текст песни на главной вместо обложки. */
+    var lyrics: Boolean
+        get() = prefs.getBoolean("lyrics", false)
+        set(value) = prefs.edit().putBoolean("lyrics", value).apply()
 
     companion object {
         const val DEFAULT_URL = "http://10.0.2.2:8765"

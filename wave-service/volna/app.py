@@ -779,11 +779,11 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
 
     @app.get("/api/library/albums")
     def library_albums(sort: str = "alpha", offset: int = 0, limit: int = 60) -> dict:
-        return {"items": index_or_503().albums_sorted(sort, offset, min(limit, 200))}
+        return {"items": index_or_503().albums_sorted(sort, offset, min(limit, 5000))}  # приложение берёт всё и ищет у себя
 
     @app.get("/api/library/artists")
     def library_artists(sort: str = "alpha", offset: int = 0, limit: int = 100) -> dict:
-        return {"items": index_or_503().artists_sorted(sort, offset, min(limit, 300))}
+        return {"items": index_or_503().artists_sorted(sort, offset, min(limit, 5000))}
 
     @app.get("/api/library/playlists")
     def library_playlists() -> dict:
@@ -860,6 +860,16 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         }
 
     # --- медиа и веб-плеер ---
+
+    @app.get("/api/lyrics/{track_id}")
+    def lyrics(track_id: str) -> dict:
+        index = rt.profiles.loaded_index()
+        track = index.songs.get(track_id) if index else None
+        try:
+            return rt.deps.library.lyrics(track_id, track.artist if track else "", track.title if track else "")
+        except Exception as exc:  # noqa: BLE001 — без текста плеер работает как обычно
+            log.warning("Текст для %s не получен: %s", track_id, exc)
+            return {"synced": False, "lines": []}
 
     @app.get("/api/stream/{track_id}")
     def stream(track_id: str, request: Request):

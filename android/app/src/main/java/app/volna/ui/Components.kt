@@ -1,5 +1,18 @@
 package app.volna.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.systemGestureExclusion
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -107,18 +120,69 @@ fun IconButtonV(image: ImageVector, description: String, size: Dp = 40.dp, tint:
     ) { VIcon(image, description, tint = tint) }
 }
 
-/** Круглая кнопка управления под волной. */
+/** Круглая кнопка управления под волной; primary — белая, для «играть/пауза». */
 @Composable
-fun Control(image: ImageVector, description: String, pressed: Boolean = false, onClick: () -> Unit) {
+fun Control(image: ImageVector, description: String, pressed: Boolean = false, primary: Boolean = false, onClick: () -> Unit) {
     Box(
         Modifier
-            .size(52.dp)
+            .size(if (primary) 64.dp else 50.dp)
             .clip(CircleShape)
-            .background(Palette.Veil)
-            .border(1.dp, if (pressed) Palette.Fg else Palette.Faint, CircleShape)
+            .background(if (primary) Palette.Fg else Palette.Veil)
+            .border(1.dp, if (pressed || primary) Palette.Fg else Palette.Faint, CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
-    ) { VIcon(image, description) }
+    ) { VIcon(image, description, if (primary) 30.dp else 24.dp, if (primary) Palette.Bg else Palette.Fg) }
+}
+
+/** Навигация для мелких элементов (имя артиста в строке трека и т. п.): задаётся в корне приложения. */
+val LocalNav = staticCompositionLocalOf<Navigator?> { null }
+
+/** Имя артиста, по нажатию — его страница. */
+@Composable
+fun ArtistLink(track: Track, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodySmall) {
+    val nav = LocalNav.current
+    Text(
+        track.artist,
+        style = style,
+        color = Palette.Muted,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = if (nav != null && track.artistId.isNotEmpty()) modifier.clickable { nav.go(Screen.Entity("artist", track.artistId)) } else modifier,
+    )
+}
+
+/**
+ * Свайп по названию трека: влево — дальше, вправо — назад. Текст едет за пальцем
+ * и возвращается на место, если палец не дотянул до порога.
+ */
+@Composable
+fun Modifier.trackSwipe(): Modifier {
+    val offset = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    val threshold = with(LocalDensity.current) { 64.dp.toPx() }
+    return this
+        .graphicsLayer {
+            translationX = offset.value
+            alpha = 1f - (abs(offset.value) / (threshold * 3)).coerceIn(0f, 0.6f)
+        }
+        .pointerInput(Unit) {
+            var dragged = 0f // считаем здесь: анимация смещения обновляется асинхронно и на быстром свайпе отстаёт
+            detectHorizontalDragGestures(
+                onDragStart = { dragged = 0f },
+                onDragEnd = {
+                    when {
+                        dragged <= -threshold -> VolnaPlayer.next("skip")
+                        dragged >= threshold -> VolnaPlayer.previous(restartFirst = false)
+                    }
+                    scope.launch { offset.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow)) }
+                },
+                onDragCancel = { scope.launch { offset.animateTo(0f) } },
+            ) { change, dx ->
+                change.consume()
+                dragged += dx
+                scope.launch { offset.snapTo(dragged) }
+            }
+        }
 }
 
 @Composable
@@ -239,6 +303,7 @@ fun SliderRow(
     left: String,
     right: String,
     format: (Float) -> String,
+    step: Float = 0.05f,
     onChange: (Float) -> Unit,
 ) {
     var current by remember(value) { mutableFloatStateOf(value) }
@@ -252,6 +317,9 @@ fun SliderRow(
             onValueChange = { current = it },
             onValueChangeFinished = { onChange(current) },
             valueRange = range,
+            // шаги и отступ от края: крайние значения легко поймать, а жест «назад» не перехватывает ползунок
+            steps = ((range.endInclusive - range.start) / step).roundToInt() - 1,
+            modifier = Modifier.padding(horizontal = 14.dp).systemGestureExclusion(),
             colors = SliderDefaults.colors(
                 thumbColor = Palette.Fg,
                 activeTrackColor = Palette.Fg,
@@ -311,8 +379,11 @@ fun TrackRow(
             Text(track.title, style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(track.reason.ifEmpty { track.artist }, style = MaterialTheme.typography.bodySmall, color = Palette.Muted,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (track.reason.isNotEmpty()) {
+                Text(track.reason, style = MaterialTheme.typography.bodySmall, color = Palette.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            } else {
+                ArtistLink(track)
+            }
         }
         if (track.liked) VIcon(VIcons.HeartFilled, "Нравится", 16.dp, Palette.Muted)
         Text(formatDuration(track.duration), style = MaterialTheme.typography.bodySmall, color = Palette.Muted)
@@ -331,7 +402,12 @@ fun ItemCard(item: Item, width: Dp? = null, onClick: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text(item.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         if (item.subtitle.isNotEmpty()) {
-            Text(item.subtitle, style = MaterialTheme.typography.bodySmall, color = Palette.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val nav = LocalNav.current
+            val toArtist = item.type == "album" && item.artistId.isNotEmpty() && nav != null
+            Text(
+                item.subtitle, style = MaterialTheme.typography.bodySmall, color = Palette.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = if (toArtist) Modifier.clickable { nav?.go(Screen.Entity("artist", item.artistId)) } else Modifier,
+            )
         }
     }
 }
@@ -342,7 +418,7 @@ fun TrackCard(track: Track, onClick: () -> Unit) {
         Cover(track.cover, Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         Text(track.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text(track.artist, style = MaterialTheme.typography.bodySmall, color = Palette.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        ArtistLink(track)
     }
 }
 
@@ -409,7 +485,7 @@ fun MiniPlayer(onOpen: () -> Unit) {
             Row(Modifier.weight(1f).clickable(onClick = onOpen), verticalAlignment = Alignment.CenterVertically) {
                 Cover(track.cover, Modifier.size(44.dp), corner = 6.dp)
                 Spacer(Modifier.width(12.dp))
-                Column {
+                Column(Modifier.weight(1f).trackSwipe()) {
                     Text(track.title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(track.artist, style = MaterialTheme.typography.bodySmall, color = Palette.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -537,21 +613,26 @@ fun WaveSettingsPanel(onShake: (() -> Unit)? = null) {
     Spacer(Modifier.height(16.dp))
     GroupLabel("Настроение")
     Chips(MOODS, s.optString("mood", "any")) { change("mood", it) }
-    Spacer(Modifier.height(16.dp))
-    GroupLabel("Занятие")
-    Chips(ACTIVITIES, s.optString("activity", "any")) { change("activity", it) }
     Spacer(Modifier.height(8.dp))
     ToggleRow("Без слов", s.optBoolean("no_vocals")) { change("no_vocals", it) }
     Spacer(Modifier.height(8.dp))
     GroupLabel("Тонкая настройка")
     val temperature = if (s.isNull("temperature")) DEFAULT_TEMPERATURE[character] ?: 0.6f else s.optDouble("temperature").toFloat()
     SliderRow("Смелость подбора", temperature, 0.1f..1.5f, "предсказуемо", "смело", { "%.2f".format(it) }) { change("temperature", it.toDouble()) }
-    SliderRow("Разнообразие", s.optDouble("diversity", 0.5).toFloat(), 0f..1f, "одно звучание", "всё разное", { "${(it * 100).toInt()}%" }) {
+    SliderRow("Разнообразие", s.optDouble("diversity", 0.5).toFloat(), 0f..1f, "одно звучание", "всё разное", { "${(it * 100).roundToInt()}%" }) {
         change("diversity", it.toDouble())
     }
-    SliderRow("Волна по треку и плейлисту", s.optDouble("steer", 0.65).toFloat(), 0.1f..0.95f, "больше своего вкуса", "ближе к источнику",
-        { "${(it * 100).toInt()}% похожего" }) { change("steer", it.toDouble()) }
+    val steered = state.kind == "steer" && state.title.isNotEmpty()
+    val similarOnly = s.optBoolean("similar_only")
+    ToggleRow(if (steered) "Только похожее на «${state.title}»" else "Волна по треку: только похожее", similarOnly) { change("similar_only", it) }
+    if (!similarOnly) {
+        SliderRow("Волна по треку и плейлисту", s.optDouble("steer", 0.65).toFloat(), 0.1f..0.95f, "больше своего вкуса", "ближе к источнику",
+            { "${(it * 100).roundToInt()}% похожего" }) { change("steer", it.toDouble()) }
+    }
     ToggleRow("Учитывать время суток и выходные", s.optBoolean("context_aware", true)) { change("context_aware", it) }
+    Spacer(Modifier.height(16.dp))
+    GroupLabel("Занятие")
+    Chips(ACTIVITIES, s.optString("activity", "any")) { change("activity", it) }
     if (onShake != null) {
         Spacer(Modifier.height(12.dp))
         Box(

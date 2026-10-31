@@ -228,6 +228,14 @@ class DemoWorld:
             return Media(206, "audio/wav", headers, [data[start : end + 1]])
         return Media(200, "audio/wav", {"Accept-Ranges": "bytes"}, [data])
 
+    def lyrics(self, track_id: str, artist: str = "", title: str = "") -> dict:
+        """Заглушка с синхронизированными строками, чтобы было что показать; у трети треков текста нет."""
+        track = self.tracks.get(track_id)
+        if track is None or zlib.crc32(track_id.encode()) % 3 == 0:
+            return {"synced": False, "lines": []}
+        count = max(1, int((track.duration - 12) // 6))
+        return {"synced": True, "lines": [{"time": 8.0 + 6 * i, "text": f"{track.title} · строка {i + 1}"} for i in range(count)]}
+
     def cover(self, cover_id: str, size: int = 600) -> Media:
         rng = np.random.default_rng(zlib.crc32(cover_id.encode()))
         cx, cy = rng.uniform(110, 190, 2)

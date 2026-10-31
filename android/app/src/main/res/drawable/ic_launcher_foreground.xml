@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Три волны: средняя ярче, как акцентная изолиния на фоне приложения -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M30,58c5,-10 10,-10 15,0s10,10 15,0 9,-8 12,-2"
+        android:strokeWidth="3.6"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M30,48c5,-10 10,-10 15,0s10,10 15,0 9,-8 12,-2"
+        android:strokeWidth="1.4"
+        android:strokeColor="#73FFFFFF"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M30,68c5,-10 10,-10 15,0s10,10 15,0 9,-8 12,-2"
+        android:strokeWidth="1.4"
+        android:strokeColor="#73FFFFFF"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

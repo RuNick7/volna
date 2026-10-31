@@ -9,7 +9,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -355,17 +357,70 @@ fun plural(n: Int, one: String, few: String, many: String): String {
     }
 }
 
+/** Строка трека. Смахнуть вправо — в очередь, как в Spotify. */
 @Composable
 fun TrackRow(
     track: Track,
     current: Boolean,
     number: Int? = null,
     showCover: Boolean = true,
+    queueable: Boolean = true,
     onMore: (Track) -> Unit,
     onPlay: () -> Unit,
 ) {
+    val offset = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val threshold = with(LocalDensity.current) { 88.dp.toPx() }
+    val armed = offset.value >= threshold
+    Box(Modifier.fillMaxWidth()) {
+        if (offset.value > 1f) {
+            Row(Modifier.matchParentSize().padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                VIcon(VIcons.Queue, null, 22.dp, if (armed) Palette.Fg else Palette.Muted)
+                Spacer(Modifier.width(8.dp))
+                Text("В очередь", style = MaterialTheme.typography.bodyMedium, color = if (armed) Palette.Fg else Palette.Muted)
+            }
+        }
+        TrackRowContent(
+            track, current, number, showCover, onMore, onPlay,
+            Modifier
+                .graphicsLayer { translationX = offset.value }
+                .background(if (offset.value > 1f) Palette.Bg else androidx.compose.ui.graphics.Color.Transparent)
+                .then(
+                    if (!queueable) Modifier else Modifier.pointerInput(track.id) {
+                        var dragged = 0f
+                        detectHorizontalDragGestures(
+                            onDragStart = { dragged = 0f },
+                            onDragEnd = {
+                                if (dragged >= threshold) VolnaPlayer.enqueue(track)
+                                scope.launch { offset.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow)) }
+                            },
+                            onDragCancel = { scope.launch { offset.animateTo(0f) } },
+                        ) { change, dx ->
+                            change.consume()
+                            val before = dragged
+                            dragged = (dragged + dx).coerceIn(0f, threshold * 1.4f) // только вправо
+                            if (before < threshold && dragged >= threshold) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            scope.launch { offset.snapTo(dragged) }
+                        }
+                    },
+                ),
+        )
+    }
+}
+
+@Composable
+private fun TrackRowContent(
+    track: Track,
+    current: Boolean,
+    number: Int?,
+    showCover: Boolean,
+    onMore: (Track) -> Unit,
+    onPlay: () -> Unit,
+    modifier: Modifier,
+) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClick = onPlay).padding(vertical = 6.dp),
+        modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClick = onPlay).padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -556,6 +611,8 @@ fun TrackActions(track: Track, onDismiss: () -> Unit, navigate: (Screen) -> Unit
         }
         Divider()
         fun act(run: () -> Unit) { onDismiss(); run() }
+        Tile(VIcons.Queue, "Играть следующим") { act { VolnaPlayer.playNext(track) } }
+        Tile(VIcons.Queue, "Добавить в очередь") { act { VolnaPlayer.enqueue(track) } }
         Tile(VIcons.Wave, "Моя волна по треку") { act { VolnaPlayer.startWave("track", track.id); navigate(Screen.Home) } }
         Tile(VIcons.Mix, "Собрать плейлист по треку") { act { navigate(Screen.Mix("track", track.id)) } }
         Tile(VIcons.Heart, if (track.liked) "Убрать из «Мне нравится»" else "Нравится") { act { likeTrack(track) } }

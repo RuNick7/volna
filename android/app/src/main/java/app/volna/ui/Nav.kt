@@ -19,6 +19,7 @@ sealed interface Screen {
     data class Entity(val type: String, val id: String) : Screen // album | artist | playlist
     data class Mix(val type: String, val id: String) : Screen // плейлист по треку или артисту
     data class SettingsPage(val key: String) : Screen
+    data object Queue : Screen
 }
 
 private fun Screen.tab(): String? = when (this) {

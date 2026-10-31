@@ -66,6 +66,8 @@ object VIcons {
     val Playlist = icon("playlist", "M4 6h12M4 11h12M4 16h7", "M16 15.5V9l4-1", circle(14f, 16f, 2f))
     val Clock = icon("clock", circle(12f, 12f, 8.5f), "M12 7.5V12l3 2")
     val More = icon("more", circle(5f, 12f, 1.4f), circle(12f, 12f, 1.4f), circle(19f, 12f, 1.4f), filled = setOf(0, 1, 2))
+    val Queue = icon("queue", "M4 6h16M4 11h16M4 16h8", "M15 13.5v6l5-3z")
+    val Grip = icon("grip", "M5 9h14M5 15h14")
     val Lyrics = icon("lyrics", "M4 6h12M4 10h12M4 14h7", "M17 18.5V12l3-1", circle(15.5f, 18.5f, 1.5f))
     val Mix = icon("mix", "M4 6h12M4 11h12M4 16h7", "M17 14v6M14 17h6")
     val Sync = icon("sync", "M20 12a8 8 0 0 1-14 5.3M4 12a8 8 0 0 1 14-5.3", "M18 3v4h-4M6 21v-4h4")

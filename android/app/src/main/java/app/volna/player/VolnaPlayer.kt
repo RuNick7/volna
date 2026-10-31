@@ -43,6 +43,10 @@ data class PlayerState(
     val durationMs: Long = 0,
     val settings: JSONObject? = null,
     val message: String? = null,
+    val queue: List<Track> = emptyList(), // добавлено вручную: играет раньше волны и списка
+    val fromQueue: Boolean = false, // текущий трек — из очереди
+    val upNext: List<Track> = emptyList(), // что будет после очереди: волна или остаток списка
+    val source: String = "", // откуда upNext: «Моя волна», название альбома…
 )
 
 /**
@@ -55,6 +59,10 @@ data class PlayerState(
  * В ExoPlayer всегда лежат текущий трек и следующий, чтобы переход был без паузы и работал
  * в фоне с выключенным экраном. «Назад» в волне ведёт по уже сыгранным трекам (history), а
  * «дальше» потом возвращает обратно (forward), не трогая сервер.
+ *
+ * Очередь, как в Spotify: добавленные вручную треки играют раньше волны и списка. Уходя
+ * с трека волны в очередь, сообщаем серверу, чем он кончился, а его следующий трек
+ * откладываем (resume) — с него волна и продолжится, когда очередь закончится.
  */
 object VolnaPlayer {
     private val scope = MainScope()
@@ -78,6 +86,10 @@ object VolnaPlayer {
     private val history = ArrayDeque<Track>()
     private val forward = ArrayDeque<Track>()
     private var current: Track? = null
+    private val queue = mutableListOf<Track>()
+    private var fromQueue = false
+    private var resume: Track? = null // с чего продолжить волну или список после очереди
+    private var resumeEnd = false // список кончился, пока играла очередь: дальше — продолжение волной
     private var busy = false
     private var loading = false
     private var message: String? = null
@@ -141,12 +153,15 @@ object VolnaPlayer {
         forward.clear()
         current = null
         settings = null
+        queue.clear()
+        leaveQueue()
         _state.value = PlayerState()
     }
 
     fun startWave(seedType: String? = null, seedId: String? = null) {
         history.clear()
         forward.clear()
+        leaveQueue() // новая волна начинается сразу; добавленное в очередь сыграет после её первого трека
         loading = true
         publish()
         scope.launch {
@@ -170,6 +185,7 @@ object VolnaPlayer {
         list = tracks
         index = start.coerceIn(0, tracks.lastIndex)
         this.context = context
+        leaveQueue()
         load(list[index])
     }
 
@@ -192,14 +208,29 @@ object VolnaPlayer {
                         remember(track)
                         load(forward.removeLast())
                     }
+                    fromQueue -> {
+                        report(track, outcome, position, duration, QUEUE)
+                        remember(track)
+                        afterQueued()
+                    }
                     mode == "wave" -> {
                         val data = api.advance(session ?: return@launch, track.id, outcome, position, duration)
                         remember(track)
-                        applyWave(data)
+                        if (queue.isNotEmpty()) {
+                            stash(data)
+                            playQueued()
+                        } else {
+                            applyWave(data)
+                        }
                     }
                     else -> {
                         report(track, outcome, position, duration, context)
-                        if (index + 1 < list.size) {
+                        if (queue.isNotEmpty()) {
+                            index += 1
+                            resume = list.getOrNull(index)
+                            resumeEnd = resume == null
+                            playQueued()
+                        } else if (index + 1 < list.size) {
                             index += 1
                             load(list[index])
                         } else {
@@ -221,7 +252,7 @@ object VolnaPlayer {
     /** «Назад»: после первых трёх секунд кнопка сначала перематывает трек в начало, свайп — нет. */
     fun previous(restartFirst: Boolean = true) {
         val track = current ?: return
-        if (restartFirst && exo.currentPosition > 3000) {
+        if (fromQueue || (restartFirst && exo.currentPosition > 3000)) { // трек из очереди — в начало
             exo.seekTo(0)
             return
         }
@@ -266,7 +297,7 @@ object VolnaPlayer {
         scope.launch {
             try {
                 val session = session
-                if (mode == "wave" && !replaying && session != null) {
+                if (mode == "wave" && !replaying && !fromQueue && session != null) {
                     applyWave(api.likeInWave(session, track.id, liked))
                 } else {
                     api.like("track", track.id, liked)
@@ -334,7 +365,101 @@ object VolnaPlayer {
         publish()
     }
 
+    // --- очередь ---
+
+    /** В конец очереди; если ничего не играет — сразу. */
+    fun enqueue(track: Track) {
+        queue.add(track)
+        if (current == null) {
+            fromQueue = true
+            load(queue.removeAt(0))
+        } else {
+            refreshTail()
+        }
+        say("«${track.title}» — в очереди")
+    }
+
+    /** Сразу после текущего трека. */
+    fun playNext(track: Track) {
+        if (current == null) return enqueue(track)
+        queue.add(0, track)
+        refreshTail()
+        say("«${track.title}» сыграет следующим")
+    }
+
+    fun moveInQueue(from: Int, to: Int) {
+        if (from !in queue.indices || to !in queue.indices || from == to) return
+        queue.add(to, queue.removeAt(from))
+        refreshTail()
+        publish()
+    }
+
+    fun removeFromQueue(position: Int) {
+        if (position !in queue.indices) return
+        queue.removeAt(position)
+        refreshTail()
+        publish()
+    }
+
+    fun clearQueue() {
+        queue.clear()
+        refreshTail()
+        publish()
+    }
+
+    /** Нажали на трек в очереди: всё, что было перед ним, пропускаем, и он играет сейчас. */
+    fun playFromQueue(position: Int) {
+        if (position !in queue.indices) return
+        repeat(position) { queue.removeAt(0) }
+        next("skip")
+    }
+
     // --- внутреннее ---
+
+    private fun playQueued() {
+        fromQueue = true
+        load(queue.removeAt(0))
+    }
+
+    /** Трек из очереди доиграл: следующий из очереди или туда, где остановились волна и список. */
+    private suspend fun afterQueued() {
+        val back = resume
+        when {
+            queue.isNotEmpty() -> playQueued()
+            resumeEnd -> {
+                leaveQueue()
+                continueAfterList()
+            }
+            back != null -> {
+                leaveQueue()
+                load(back)
+            }
+            mode == "wave" -> {
+                leaveQueue()
+                startWave()
+            }
+            else -> {
+                leaveQueue()
+                load(null)
+            }
+        }
+    }
+
+    private fun leaveQueue() {
+        fromQueue = false
+        resume = null
+        resumeEnd = false
+    }
+
+    /** Волна ушла на трек вперёд, но сначала доиграет очередь. */
+    private fun stash(data: WaveState) {
+        session = data.session
+        kind = data.kind
+        title = data.title
+        upcoming = data.upcoming
+        data.settings?.let { settings = it }
+        resume = data.track
+    }
 
     private suspend fun continueAfterList() {
         val keepGoing = runCatching { api.preferences().optBoolean("continue_after_end", true) }.getOrDefault(true)
@@ -366,6 +491,12 @@ object VolnaPlayer {
         title = data.title
         upcoming = data.upcoming
         data.settings?.let { settings = it }
+        if (fromQueue) { // играет очередь: волна обновилась (настройки, «встряхнуть») и подождёт
+            resume = data.track
+            refreshTail()
+            publish()
+            return
+        }
         if (replaying) { // переслушиваем прошлое: очередь сервера обновилась, но играет сейчас не она
             refreshTail()
             publish()
@@ -385,7 +516,47 @@ object VolnaPlayer {
     private fun onAutoAdvance(item: MediaItem?) {
         val finished = current ?: return
         val duration = durationSeconds(finished)
+        val intoQueue = !replaying && item != null && queue.firstOrNull()?.id == item.mediaId
         when {
+            fromQueue -> {
+                report(finished, "complete", duration, duration, QUEUE)
+                remember(finished)
+                if (intoQueue) {
+                    current = queue.removeAt(0)
+                } else {
+                    current = resume
+                    leaveQueue()
+                }
+                refreshTail()
+                publish()
+            }
+            intoQueue && mode == "wave" -> {
+                remember(finished)
+                current = queue.removeAt(0)
+                fromQueue = true
+                refreshTail()
+                publish()
+                val session = session ?: return
+                scope.launch { // волне — что её трек дослушан; её следующий подождёт очереди
+                    try {
+                        stash(api.advance(session, finished.id, "complete", duration, duration))
+                        refreshTail()
+                        publish()
+                    } catch (e: IOException) {
+                        say(problem(e))
+                    }
+                }
+            }
+            intoQueue -> {
+                report(finished, "complete", duration, duration, context)
+                index += 1
+                resume = list.getOrNull(index)
+                resumeEnd = resume == null
+                current = queue.removeAt(0)
+                fromQueue = true
+                refreshTail()
+                publish()
+            }
             replaying -> {
                 report(finished, "complete", duration, duration, PlayContext("other"))
                 remember(finished)
@@ -448,8 +619,23 @@ object VolnaPlayer {
 
     private fun nextUp(): Track? = when {
         replaying -> forward.lastOrNull()
+        queue.isNotEmpty() -> queue.first()
+        fromQueue -> if (resumeEnd) null else resume
         mode == "wave" -> upcoming.firstOrNull()
         else -> list.getOrNull(index + 1)
+    }
+
+    /** Что заиграет, когда кончится очередь. */
+    private fun upNext(): List<Track> = when {
+        mode == "wave" -> listOfNotNull(resume.takeIf { fromQueue }) + upcoming
+        fromQueue -> list.drop(index) // index уже указывает на трек, с которого список продолжится
+        else -> list.drop(index + 1)
+    }
+
+    private fun source(): String = when {
+        mode == "wave" && kind == "steer" && title.isNotEmpty() -> "Моя волна по «$title»"
+        mode == "wave" -> "Моя волна"
+        else -> context?.title.orEmpty()
     }
 
     private fun remember(track: Track) {
@@ -506,8 +692,14 @@ object VolnaPlayer {
             durationMs = exo.duration.takeIf { it > 0 } ?: ((current?.duration ?: 0.0) * 1000).toLong(),
             settings = settings,
             message = message,
+            queue = queue.toList(),
+            fromQueue = fromQueue,
+            upNext = upNext().take(20),
+            source = source(),
         )
     }
+
+    private val QUEUE = PlayContext("queue")
 
     private fun problem(e: IOException): String = when (e) {
         is ApiException -> e.message ?: "Ошибка сервиса"

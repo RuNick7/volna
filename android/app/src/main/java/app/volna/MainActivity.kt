@@ -52,6 +52,7 @@ import app.volna.ui.MiniPlayer
 import app.volna.ui.MixScreen
 import app.volna.ui.Navigator
 import app.volna.ui.Palette
+import app.volna.ui.QueueScreen
 import app.volna.ui.Screen
 import app.volna.ui.SearchScreen
 import app.volna.ui.SettingsPage
@@ -123,6 +124,7 @@ private fun VolnaRoot() {
                     is Screen.LibraryList -> LibraryListScreen(screen.kind, nav) { actionsFor = it }
                     is Screen.Entity -> EntityScreen(screen.type, screen.id, nav) { actionsFor = it }
                     is Screen.Mix -> MixScreen(screen.type, screen.id, nav) { actionsFor = it }
+                    Screen.Queue -> QueueScreen(nav) { actionsFor = it }
                     is Screen.SettingsPage -> SettingsPage(screen.key, nav)
                 }
             }

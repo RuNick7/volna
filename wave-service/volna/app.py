@@ -75,13 +75,13 @@ class EntityLikeRequest(BaseModel):
 
 
 class PlaybackEvent(BaseModel):
-    """Прослушивание вне волны: альбом, плейлист, поиск, библиотека."""
+    """Прослушивание вне волны: альбом, плейлист, поиск, библиотека, очередь."""
 
     track_id: str
     outcome: Literal["complete", "skip", "dislike"]
     position: float = Field(0.0, ge=0)
     duration: float = Field(0.0, ge=0)
-    context_type: Literal["album", "playlist", "artist", "search", "library", "other"] = "other"
+    context_type: Literal["album", "playlist", "artist", "search", "library", "queue", "other"] = "other"
     context_id: str = ""
     device: str = ""
 

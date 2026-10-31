@@ -138,3 +138,10 @@ def test_navidrome_lyrics_prefer_synced(monkeypatch):
     plain = {"getLyricsBySongId": {"lyricsList": {}}, "getLyrics": {"lyrics": {"value": "a\nb"}}}
     monkeypatch.setattr(nd, "call", lambda endpoint, **params: plain[endpoint])
     assert nd.lyrics("t1", "Artist", "Song")["lines"] == [{"time": None, "text": "a"}, {"time": None, "text": "b"}]
+
+
+def test_queue_plays_are_recorded(client):
+    track = client.get("/api/library/recent").json()["tracks"][0]
+    response = client.post("/api/events", json={"track_id": track["id"], "outcome": "complete",
+                                                 "duration": track["duration"], "context_type": "queue"})
+    assert response.status_code == 200 and response.json()["kind"] == "complete"

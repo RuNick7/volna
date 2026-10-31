@@ -173,11 +173,16 @@ private fun Hero(state: PlayerState, nav: Navigator, modifier: Modifier, onMore:
                 val summary = waveSummary(state.settings)
                 Pill(if (steered) "По «${state.title}» · $summary" else summary, VIcons.Sliders, onClick = onTune)
             }
-            if (track != null) IconButtonV(VIcons.More, "Ещё: волна и плейлист по треку", 44.dp, tint = Palette.Fg) { onMore(track) }
+            if (track != null) {
+                IconButtonV(VIcons.Queue, "Очередь", 44.dp, tint = if (state.queue.isNotEmpty()) Palette.Fg else Palette.Muted) {
+                    nav.go(Screen.Queue)
+                }
+                IconButtonV(VIcons.More, "Ещё: волна и плейлист по треку", 44.dp, tint = Palette.Fg) { onMore(track) }
+            }
         }
         state.nextUp?.let { next ->
             Text(
-                "Дальше: ${next.title} · ${next.artist}",
+                (if (state.queue.isNotEmpty()) "Дальше из очереди: " else "Дальше: ") + "${next.title} · ${next.artist}",
                 style = MaterialTheme.typography.bodySmall,
                 color = Palette.Muted,
                 maxLines = 1,

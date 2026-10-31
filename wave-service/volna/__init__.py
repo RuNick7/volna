@@ -1,3 +1,3 @@
 """Volna: прототип «Моей волны» для Navidrome + AudioMuse-AI."""
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"

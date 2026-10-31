@@ -4,6 +4,8 @@ import android.app.PendingIntent
 import android.content.Intent
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
+import androidx.media3.datasource.DataSourceBitmapLoader
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import app.volna.MainActivity
@@ -38,7 +40,9 @@ class PlaybackService : MediaSessionService() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        session = MediaSession.Builder(this, player).setSessionActivity(openApp).build()
+        // обложку для шторки и экрана блокировки грузим тем же клиентом, что и всё остальное: с токеном
+        val covers = DataSourceBitmapLoader.Builder(this).setDataSourceFactory(OkHttpDataSource.Factory(VolnaPlayer.api.client)).build()
+        session = MediaSession.Builder(this, player).setSessionActivity(openApp).setBitmapLoader(covers).build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session

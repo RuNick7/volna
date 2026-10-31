@@ -1,0 +1,26 @@
+# Volna на сервере рядом с navidrome-stack. Выкатка: ./deploy/deploy.sh, подробности в deploy/README.md.
+name: volna
+
+services:
+  volna:
+    build: ./wave-service
+    image: volna/wave-service
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Moscow
+      # сервис открыт в интернет через Caddy: пускаем только по аккаунту Navidrome
+      VOLNA_AUTH: "1"
+    volumes:
+      - ./data:/data
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Общая сеть с Navidrome, AudioMuse и Caddy: сервис ходит к ним напрямую, Caddy — к нему по имени volna
+networks:
+  default:
+    name: navidrome-stack_default
+    external: true

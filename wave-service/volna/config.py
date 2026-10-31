@@ -75,6 +75,7 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8765
     force_demo: bool = False  # --demo: не подключаться к сохранённому серверу
+    auth: bool = False  # вход аккаунтом Navidrome: обязателен, если сервис открыт в интернет
 
     @property
     def env_server(self) -> ServerConfig | None:
@@ -105,4 +106,5 @@ class Settings:
             db_path=Path(env("VOLNA_DB", "")) if env("VOLNA_DB") else default_db,
             host=env("VOLNA_HOST", "127.0.0.1"),
             port=int(env("VOLNA_PORT", "8765")),
+            auth=env("VOLNA_AUTH", "").lower() in ("1", "true", "yes"),
         )

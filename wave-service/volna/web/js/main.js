@@ -5,6 +5,7 @@ import { setTrackActions, waveSettingsPanel } from "./components.js";
 import { Player } from "./player.js";
 import { renderHome } from "./views/home.js";
 import { renderLibrary } from "./views/library.js";
+import { renderLogin } from "./views/login.js";
 import { renderMix } from "./views/mix.js";
 import { renderEntity } from "./views/pages.js";
 import { renderSearch } from "./views/search.js";
@@ -211,15 +212,34 @@ function applyInterface(p = prefs()) {
   requestAnimationFrame(pulse);
 })();
 
-// --- старт ---
+// --- вход и старт ---
+
+function showLogin() {
+  if (document.body.dataset.route === "login") return;
+  player.audio.pause();
+  cleanup?.();
+  cleanup = null;
+  window.removeEventListener("hashchange", route);
+  document.body.dataset.route = "login";
+  view.replaceChildren();
+  renderLogin(view);
+}
+
+function start() {
+  get("/api/settings").then((s) => {
+    player.settings = s.settings;
+    player.emit();
+  }).catch(() => {});
+  get("/api/server").then((s) => {
+    document.getElementById("status").textContent = s.mode === "demo" ? "демо-библиотека" : "";
+    if (s.syncing) toast("Синхронизирую библиотеку…");
+  }).catch((e) => e.status !== 401 && toast("Сервис Volna недоступен"));
+  route();
+}
 
 applyInterface();
-get("/api/settings").then((s) => {
-  player.settings = s.settings;
-  player.emit();
-}).catch(() => {});
-get("/api/server").then((s) => {
-  document.getElementById("status").textContent = s.mode === "demo" ? "демо-библиотека" : "";
-  if (s.syncing) toast("Синхронизирую библиотеку…");
-}).catch(() => toast("Сервис Volna недоступен"));
-route();
+// сервис, открытый в интернет, просит войти; токен живёт в cookie, повторно входить не нужно
+window.addEventListener("volna:login", showLogin);
+get("/api/auth/me")
+  .then((me) => (me.auth && !me.user ? showLogin() : start()))
+  .catch(start);

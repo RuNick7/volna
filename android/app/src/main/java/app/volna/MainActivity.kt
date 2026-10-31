@@ -40,6 +40,7 @@ import androidx.media3.session.SessionToken
 import app.volna.data.Track
 import app.volna.player.PlaybackService
 import app.volna.player.VolnaPlayer
+import app.volna.ui.ConnectScreen
 import app.volna.ui.CoverStyle
 import app.volna.ui.EntityScreen
 import app.volna.ui.HomeScreen
@@ -72,7 +73,12 @@ class MainActivity : ComponentActivity() {
         val app = application as VolnaApp
         CoverStyle.color = app.prefs.colorCovers
         UiPrefs.background = app.prefs.background
-        setContent { VolnaTheme { VolnaRoot() } }
+        setContent {
+            VolnaTheme {
+                val needLogin by app.api.needLogin.collectAsState()
+                if (needLogin) ConnectScreen() else VolnaRoot()
+            }
+        }
     }
 
     override fun onStart() {

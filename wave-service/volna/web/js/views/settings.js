@@ -45,6 +45,14 @@ function rootPage(root, { navigate, player }) {
     subtitles.playback = `Качество: ${QUALITY_LABELS[p.quality] || p.quality}`;
     render();
   }).catch(() => {});
+  get("/api/auth/me").then((me) => {
+    if (!me.auth) return;
+    const logout = async () => {
+      await post("/api/auth/logout").catch(() => {});
+      location.reload();
+    };
+    root.append(h("button", { class: "link-btn settings-logout", type: "button", onClick: logout }, `Выйти (${me.user})`));
+  }).catch(() => {});
 }
 
 // --- сервер ---

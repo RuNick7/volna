@@ -2,7 +2,7 @@
 // * wave — очередь держит сервер: на каждое окончание трека сообщаем, чем всё кончилось, и получаем следующий;
 // * list — обычная очередь из альбома, плейлиста или поиска. Прослушивания всё равно уходят в /api/events,
 //   а когда список закончился, плеер просит у сервера продолжение похожим на весь список.
-import { get, post, put } from "./api.js";
+import { get, post, put, rel } from "./api.js";
 import { toast } from "./dom.js";
 
 export class Player extends EventTarget {
@@ -296,13 +296,13 @@ export class Player extends EventTarget {
       this.emit();
       return;
     }
-    this.audio.src = track.stream;
+    this.audio.src = rel(track.stream);
     if ("mediaSession" in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: track.title,
         artist: track.artist,
         album: track.album,
-        artwork: track.cover ? [{ src: track.cover, sizes: "600x600" }] : [],
+        artwork: track.cover ? [{ src: new URL(rel(track.cover), location.href).href, sizes: "600x600" }] : [],
       });
     }
     this.emit();

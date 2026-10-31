@@ -23,7 +23,14 @@ def main() -> None:
     settings = Settings.from_env(force_demo=args.demo)
     host = args.host or settings.host
     port = args.port or settings.port
-    source = "демо-библиотека" if settings.demo else f"Navidrome {settings.navidrome_url}"
+    # без NAVIDROME_URL сервис берёт сервер, сохранённый в настройках, а если его нет — демо
+    source = (
+        "демо-библиотека" if settings.force_demo
+        else f"Navidrome {settings.navidrome_url}" if settings.navidrome_url
+        else "сервер из настроек или демо-библиотека"
+    )
+    if settings.auth:
+        source += ", вход по аккаунту Navidrome"
     print(f"Volna: http://{host}:{port}  ({source})")
     uvicorn.run(create_app(settings), host=host, port=port, log_level="warning")
 

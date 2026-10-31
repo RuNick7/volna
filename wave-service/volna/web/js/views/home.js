@@ -1,5 +1,5 @@
 // Главная: одна большая кнопка «Моя волна» (она же экран «сейчас играет») и полки ниже.
-import { get } from "../api.js";
+import { get, rel } from "../api.js";
 import { h, icon } from "../dom.js";
 import { empty, loading, shelf, waveSummary } from "../components.js";
 
@@ -50,7 +50,7 @@ export function renderHome(root, { player, navigate, openWaveSheet, openTrackAct
     waveButton.classList.toggle("is-loading", player.loading);
     waveButton.classList.toggle("has-cover", Boolean(t));
     waveButton.classList.toggle("is-playing", player.playing);
-    coverBox.style.backgroundImage = t?.cover ? `url("${t.cover}")` : "";
+    coverBox.style.backgroundImage = t?.cover ? `url("${rel(t.cover)}")` : "";
     playIcon.innerHTML = icon(player.playing ? "pause" : "play").innerHTML;
     waveButton.setAttribute("aria-label", t ? (player.playing ? "Пауза" : "Продолжить") : "Запустить «Мою волну»");
     title.textContent = t ? t.title : "Моя волна";

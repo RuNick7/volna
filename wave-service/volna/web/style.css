@@ -805,6 +805,17 @@ body.has-mini .toast { bottom: calc(var(--tabbar) + var(--mini) + env(safe-area-
   .grid { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* --- вход --- */
+
+body[data-route="login"] .tabbar,
+body[data-route="login"] .mini { display: none; }
+.login { max-width: 360px; margin: 12vh auto 0; padding: 0 4px; }
+.login__title { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+.login .hint { margin-bottom: 22px; }
+.login__error { min-height: 18px; margin: -4px 0 14px; color: var(--fg); }
+.login .btn { justify-content: center; }
+.settings-logout { margin-top: 18px; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

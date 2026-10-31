@@ -1,4 +1,5 @@
 // Мелкие помощники для DOM: создание элементов, иконки, форматирование.
+import { rel } from "./api.js";
 
 export function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
@@ -89,7 +90,7 @@ export function ago(ts) {
 
 export function cover(src, extraClass = "") {
   const box = h("span", { class: `cover ${extraClass}`.trim() });
-  if (src) box.append(h("img", { src, alt: "", loading: "lazy", decoding: "async" }));
+  if (src) box.append(h("img", { src: rel(src), alt: "", loading: "lazy", decoding: "async" }));
   return box;
 }
 

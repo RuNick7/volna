@@ -8,7 +8,9 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import app.volna.data.ApiException
 import app.volna.data.Track
 import app.volna.data.VolnaApi
@@ -82,6 +84,7 @@ object VolnaPlayer {
         if (::exo.isInitialized) return
         this.api = api
         exo = ExoPlayer.Builder(context)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(api.client))) // звук тоже с токеном
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
                 true, // аудиофокус: звонок и навигатор ставят на паузу
@@ -114,6 +117,23 @@ object VolnaPlayer {
     }
 
     // --- запуск ---
+
+    /** Вышли из аккаунта: останавливаем музыку и забываем очередь. */
+    fun reset() {
+        exo.stop()
+        exo.clearMediaItems()
+        mode = null
+        session = null
+        upcoming = emptyList()
+        list = emptyList()
+        index = 0
+        context = null
+        history.clear()
+        forward.clear()
+        current = null
+        settings = null
+        _state.value = PlayerState()
+    }
 
     fun startWave(seedType: String? = null, seedId: String? = null) {
         history.clear()

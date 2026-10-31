@@ -52,7 +52,7 @@ fun SettingsScreen(nav: Navigator) {
         item { PageHeader("Настройки") }
         item {
             Column {
-                Tile(VIcons.Phone, "Сервис Volna", app.prefs.serviceUrl) { nav.go(Screen.SettingsPage("service")) }
+                Tile(VIcons.Phone, "Аккаунт", accountSubtitle(app)) { nav.go(Screen.SettingsPage("service")) }
                 Tile(VIcons.Server, "Сервер", serverSubtitle) { nav.go(Screen.SettingsPage("server")) }
                 Tile(VIcons.Wave, "Моя волна", "Характер, настроение, смелость подбора") { nav.go(Screen.SettingsPage("wave")) }
                 Tile(VIcons.Playback, "Воспроизведение", "Качество потока, что играть после альбома") { nav.go(Screen.SettingsPage("playback")) }
@@ -71,7 +71,7 @@ fun SettingsScreen(nav: Navigator) {
 @Composable
 fun SettingsPage(key: String, nav: Navigator) {
     val title = mapOf(
-        "service" to "Сервис Volna", "server" to "Сервер", "wave" to "Моя волна", "playback" to "Воспроизведение",
+        "service" to "Аккаунт", "server" to "Сервер", "wave" to "Моя волна", "playback" to "Воспроизведение",
         "interface" to "Интерфейс", "library" to "Библиотека и вкус", "about" to "О приложении",
     )[key].orEmpty()
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(horizontal = 16.dp)) {
@@ -100,40 +100,20 @@ fun SettingsPage(key: String, nav: Navigator) {
 @Composable
 private fun ServicePage() {
     val app = LocalContext.current.applicationContext as VolnaApp
-    var url by remember { mutableStateOf(app.prefs.serviceUrl) }
-    var status by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    GroupLabel("Адрес")
-    OutlinedTextField(
-        value = url,
-        onValueChange = { url = it },
-        singleLine = true,
-        label = { Text("Адрес сервиса Volna") },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-        colors = textFieldColors(),
-        modifier = Modifier.fillMaxWidth(),
-    )
-    Hint(
-        "Volna-приложение ходит в сервис Volna, а тот — в Navidrome и AudioMuse.\n" +
-            "• Эмулятор на Mac: http://10.0.2.2:8765 — это сам Mac.\n" +
-            "• Телефон в той же Wi-Fi: http://<IP Mac>:8765, а сервис запустите с VOLNA_HOST=0.0.0.0.",
-    )
+    GroupLabel("Подключение")
+    Hint(buildString {
+        if (app.prefs.user.isNotEmpty()) append("Вход: ${app.prefs.user}\n")
+        append("Сервис Volna: ${app.prefs.serviceUrl}")
+    })
     Spacer(Modifier.height(16.dp))
-    Pill("Сохранить и проверить", primary = true) {
-        app.prefs.serviceUrl = url
-        status = "Проверяю…"
+    Pill("Выйти") {
         scope.launch {
-            status = try {
-                val health = VolnaPlayer.api.health()
-                val mode = if (health.optString("mode") == "demo") "демо-библиотека" else "свой сервер"
-                val wave = if (health.optBoolean("audiomuse")) "волна готова" else "AudioMuse не подключён"
-                "Подключено: Volna ${health.optString("version")}, $mode, $wave"
-            } catch (e: IOException) {
-                "Не отвечает: ${e.message}"
-            }
+            VolnaPlayer.reset()
+            app.api.logout()
         }
     }
-    status?.let { Hint(it) }
+    Hint("Чтобы подключиться к другому серверу, выйдите и введите его адрес.")
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -362,4 +342,9 @@ private fun AboutPage() {
 /** Настройки интерфейса, которые читает App: фон. Обложки — в CoverStyle. */
 object UiPrefs {
     var background by mutableStateOf("live")
+}
+
+private fun accountSubtitle(app: VolnaApp): String {
+    val host = app.prefs.serviceUrl.substringAfter("://")
+    return if (app.prefs.user.isEmpty()) host else "${app.prefs.user} · $host"
 }

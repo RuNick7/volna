@@ -16,13 +16,14 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import __version__
+from .auth import COOKIE, TOKEN_TTL, Auth, LoginError, client_ip, request_token
 from .config import ServerConfig, Settings, normalize_url
 from .engine import Steer, WaveSession, build_mix, classify, register_playback
 from .library import LibraryIndex, track_json
@@ -98,6 +99,12 @@ class MixRequest(BaseModel):
 class PlaylistCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     track_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class LoginForm(BaseModel):
+    user: str
+    password: str
+    device: str = ""
 
 
 class ServerForm(BaseModel):
@@ -348,6 +355,35 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
     rt = Runtime(settings, deps)
     app = FastAPI(title="Volna", version=__version__)
     app.state.runtime = rt
+    auth = Auth(rt.config, settings.auth)
+    app.state.auth = auth
+
+    def owner_login(user: str, password: str) -> bool:
+        """Пускаем только аккаунт, под которым сервис ходит в Navidrome; пароль проверяет сам Navidrome."""
+        from .navidrome import Navidrome, SubsonicError
+
+        server = rt.server
+        if server is None:
+            raise LoginError(503, "Сервис ещё не подключён к Navidrome")
+        if user.casefold() != server.navidrome_user.casefold():
+            return False
+        try:
+            Navidrome(server.navidrome_url, user, password, Store(":memory:"), timeout=8).ping()
+        except SubsonicError:
+            return False
+        except httpx.HTTPError as exc:
+            raise LoginError(503, "Navidrome не отвечает, попробуйте позже") from exc
+        return True
+
+    auth.verify = owner_login
+    open_paths = {"/api/health", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
+
+    @app.middleware("http")
+    async def require_login(request: Request, call_next):
+        path = request.url.path
+        if auth.enabled and path.startswith("/api/") and path not in open_paths and not auth.user(request_token(request)):
+            return JSONResponse({"detail": "Нужно войти"}, status_code=401)
+        return await call_next(request)
 
     @app.middleware("http")
     async def fresh_ui(request: Request, call_next):
@@ -460,8 +496,10 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
     # --- служебное и сервер ---
 
     @app.get("/api/health")
-    def health() -> dict:
-        status = {"mode": "demo" if rt.deps.demo else "live", "version": __version__}
+    def health(request: Request) -> dict:
+        status = {"service": "volna", "mode": "demo" if rt.deps.demo else "live", "version": __version__, "auth": auth.enabled}
+        if auth.enabled and not auth.user(request_token(request)):
+            return status  # до входа не рассказываем, к чему подключён сервис
         for name, service in (("navidrome", rt.deps.library), ("audiomuse", rt.deps.sim)):
             try:
                 status[name] = bool(service.ping())
@@ -469,6 +507,37 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
                 status[name] = False
                 status[f"{name}_error"] = str(exc)
         return status
+
+    # --- вход ---
+
+    def cookie_path(request: Request) -> str:
+        # за Caddy сервис живёт по адресу /volna/: cookie нужна только ему, а не Navidrome рядом
+        return request.headers.get("x-forwarded-prefix", "").rstrip("/") + "/"
+
+    @app.post("/api/auth/login")
+    def login(form: LoginForm, request: Request, response: Response) -> dict:
+        if not auth.enabled:
+            return {"auth": False, "token": "", "user": ""}
+        user = form.user.strip()
+        try:
+            token = auth.login(user, form.password, ip=client_ip(request), device=form.device)
+        except LoginError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+        response.set_cookie(
+            COOKIE, token, max_age=TOKEN_TTL, httponly=True, samesite="lax", secure=secure, path=cookie_path(request)
+        )
+        return {"auth": True, "token": token, "user": user}
+
+    @app.post("/api/auth/logout")
+    def logout(request: Request, response: Response) -> dict:
+        auth.logout(request_token(request))
+        response.delete_cookie(COOKIE, path=cookie_path(request))
+        return {"ok": True}
+
+    @app.get("/api/auth/me")
+    def me(request: Request) -> dict:
+        return {"auth": auth.enabled, "user": auth.user(request_token(request)) if auth.enabled else None}
 
     @app.get("/api/server")
     def get_server() -> dict:

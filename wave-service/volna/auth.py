@@ -75,7 +75,14 @@ class Auth:
                 failures.popleft()
             if len(failures) >= MAX_FAILURES:
                 raise LoginError(429, "Слишком много попыток входа, подождите несколько минут")
-        if not user or not password or not self.verify(user, password):
+        try:
+            ok = bool(user and password) and self.verify(user, password)
+        except LoginError as exc:
+            if exc.status == 403:  # чужой аккаунт — тоже неудачная попытка, иначе можно перебирать имена
+                with self._lock:
+                    self._failures[ip].append(now)
+            raise
+        if not ok:
             with self._lock:
                 self._failures[ip].append(now)
             raise LoginError(401, "Неверный логин или пароль")

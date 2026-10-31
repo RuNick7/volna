@@ -366,7 +366,7 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         if server is None:
             raise LoginError(503, "Сервис ещё не подключён к Navidrome")
         if user.casefold() != server.navidrome_user.casefold():
-            return False
+            raise LoginError(403, "Этот аккаунт Navidrome не подключён к Volna: войдите тем, к которому подключён сервис")
         try:
             Navidrome(server.navidrome_url, user, password, Store(":memory:"), timeout=8).ping()
         except SubsonicError:

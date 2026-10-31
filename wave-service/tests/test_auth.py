@@ -70,6 +70,7 @@ def test_only_the_owner_account_may_log_in(tmp_path, monkeypatch):
 
     app.state.runtime.server = ServerConfig("http://navidrome:4533", "Owner", "pw")
     client = TestClient(app)
-    assert client.post("/api/auth/login", json={"user": "guest", "password": "x"}).status_code == 401
+    guest = client.post("/api/auth/login", json={"user": "guest", "password": "x"})
+    assert guest.status_code == 403 and "не подключён" in guest.json()["detail"]
     assert client.post("/api/auth/login", json={"user": "owner", "password": "x"}).status_code == 200
     assert pinged == ["owner"]  # чужой логин даже не проверяем в Navidrome

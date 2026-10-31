@@ -164,16 +164,25 @@
     path.lineTo(x2, y2);
   }
 
+  // live — обычное течение; calm — медленнее и тише; off — без линий.
+  // dim приглушает фон на страницах со списками, чтобы текст читался.
+  const MODES = { live: { speed: 1, alpha: 1 }, calm: { speed: 0.3, alpha: 0.65 }, off: { speed: 0, alpha: 0 } };
+  let mode = MODES.live;
+  let dim = 1;
+  let dimTarget = 1;
+
   function render() {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, width, height);
+    const alpha = mode.alpha * dim;
+    if (alpha <= 0.01) return;
     sample();
     const paths = [new Path2D(), new Path2D()];
     contours(paths);
     ctx.lineWidth = 1;
-    ctx.strokeStyle = `rgba(255,255,255,${0.12 + energy * 0.1})`;
+    ctx.strokeStyle = `rgba(255,255,255,${(0.12 + energy * 0.1) * alpha})`;
     ctx.stroke(paths[0]);
-    ctx.strokeStyle = `rgba(255,255,255,${0.32 + energy * 0.3})`;
+    ctx.strokeStyle = `rgba(255,255,255,${(0.32 + energy * 0.3) * alpha})`;
     ctx.stroke(paths[1]);
   }
 
@@ -183,7 +192,9 @@
     const dt = Math.min((now - lastFrame) / 1000, 0.1);
     lastFrame = now;
     energy += (energySource() - energy) * 0.12;
-    time += dt * (0.5 + energy * 2.2);
+    dim += (dimTarget - dim) * 0.1;
+    if (mode.speed === 0 && Math.abs(dimTarget - dim) < 0.01) return;
+    time += dt * (0.5 + energy * 2.2) * mode.speed;
     render();
   }
 
@@ -195,5 +206,16 @@
   window.Topo = {
     setEnergySource(fn) { energySource = fn; },
     getEnergy() { return energy; },
+    setMode(name) {
+      mode = MODES[name] || MODES.live;
+      render();
+    },
+    setDim(on) {
+      dimTarget = on ? 0.4 : 1;
+      if (reduceMotion) {
+        dim = dimTarget;
+        render();
+      }
+    },
   };
 })();

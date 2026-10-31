@@ -18,6 +18,11 @@ class Track:
     last_played: float | None = None  # unix time
     starred: bool = False
     rating: int = 0
+    starred_at: float | None = None
+    track_no: int = 0
+    disc: int = 0
+    year: int = 0
+    genre: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -37,6 +42,12 @@ class Entity:
     starred: bool = False
     rating: int = 0
     play_count: int = 0
+    artist_id: str = ""
+    cover_id: str = ""
+    year: int = 0
+    song_count: int = 0
+    album_count: int = 0
+    created: float | None = None  # когда появился в библиотеке
 
 
 @dataclass

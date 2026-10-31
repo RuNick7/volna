@@ -77,6 +77,7 @@ class Store:
                     self._db.execute(f"ALTER TABLE events ADD COLUMN {column} TEXT")
             self._db.commit()
         self._vec_cache: dict[str, np.ndarray] = {}
+        self._feat_cache: dict[str, dict] = {}
 
     def _rows(self, sql: str, ids: list[str]) -> list[tuple]:
         rows: list[tuple] = []
@@ -164,20 +165,22 @@ class Store:
     # --- признаки (tempo, energy, тональность) ---
 
     def features(self, ids: list[str], retry_after: float) -> tuple[dict[str, dict], list[str]]:
-        found: dict[str, dict] = {}
+        found = {i: self._feat_cache[i] for i in ids if i in self._feat_cache}
+        rest = [i for i in ids if i not in found]
         known_missing: set[str] = set()
         now = time.time()
         for track_id, data, fetched_at in self._rows(
-            "SELECT id, data, fetched_at FROM features WHERE id IN ({marks})", ids
+            "SELECT id, data, fetched_at FROM features WHERE id IN ({marks})", rest
         ):
             if data is not None:
-                found[track_id] = json.loads(data)
+                found[track_id] = self._feat_cache[track_id] = json.loads(data)
             elif now - fetched_at < retry_after:
                 known_missing.add(track_id)
-        return found, [i for i in ids if i not in found and i not in known_missing]
+        return found, [i for i in rest if i not in found and i not in known_missing]
 
     def put_features(self, items: dict[str, dict | None]) -> None:
         now = time.time()
+        self._feat_cache.update({i: f for i, f in items.items() if f is not None})
         rows = [(i, None if f is None else json.dumps(f), now) for i, f in items.items()]
         self._write("INSERT OR REPLACE INTO features (id, data, fetched_at) VALUES (?, ?, ?)", rows)
 

@@ -61,7 +61,7 @@ DISLIKED_GENRE = 6
 class DemoWorld:
     def __init__(self, seed: int = 7, dim: int = 200, artists_per_genre: int = 6, tracks_per_artist: int = 12):
         rng = np.random.default_rng(seed)
-        self._rng = np.random.default_rng()
+        self._rng = np.random.default_rng(seed + 100)  # выдача alchemy и случайные треки: воспроизводимо
         self._lock = threading.Lock()
         self._audio_cache: OrderedDict[str, bytes] = OrderedDict()
         self.tracks: dict[str, Track] = {}
@@ -80,6 +80,8 @@ class DemoWorld:
 
         specs = [(g, None) for g in range(len(GENRES)) for _ in range(artists_per_genre)]
         specs += [(g, (g + 1) % len(GENRES)) for g in range(len(GENRES))]
+        meta_rng = np.random.default_rng(seed + 1)  # год и дата добавления: отдельный поток, чтобы не менять звук и векторы
+        now = time.time()
         for idx, (g, bridge) in enumerate(specs):
             base = centers[g] if bridge is None else 0.5 * (centers[g] + centers[bridge])
             artist_center = base + 0.6 * rng.normal(0, 1, dim)
@@ -88,9 +90,15 @@ class DemoWorld:
             traits = GENRE_TRAITS[g] if bridge is None else {
                 k: (v + GENRE_TRAITS[bridge][k]) / 2 for k, v in GENRE_TRAITS[g].items()
             }
-            self.albums[f"demo-album-{idx}"] = Entity(f"demo-album-{idx}", album, artist=names[idx])
-            self.artists[f"demo-artist-{idx}"] = Entity(f"demo-artist-{idx}", names[idx])
-            for t in range(tracks_per_artist if bridge is None else 8):
+            album_id, artist_id = f"demo-album-{idx}", f"demo-artist-{idx}"
+            count = tracks_per_artist if bridge is None else 8
+            year = int(meta_rng.integers(1995, 2027))
+            self.albums[album_id] = Entity(
+                album_id, album, artist=names[idx], artist_id=artist_id, cover_id=album_id, year=year,
+                song_count=count, created=now - float(meta_rng.uniform(1, 400)) * DAY,
+            )
+            self.artists[artist_id] = Entity(artist_id, names[idx], cover_id=artist_id, album_count=1)
+            for t in range(count):
                 tid = f"demo-{idx:02d}-{t:02d}"
                 self.tracks[tid] = Track(
                     id=tid,
@@ -98,9 +106,12 @@ class DemoWorld:
                     artist=names[idx],
                     album=album,
                     duration=float(rng.integers(40, 81)),
-                    artist_id=f"demo-artist-{idx}",
-                    album_id=f"demo-album-{idx}",
-                    cover_id=tid,
+                    artist_id=artist_id,
+                    album_id=album_id,
+                    cover_id=album_id,
+                    track_no=t + 1,
+                    year=year,
+                    genre=GENRES[g] if bridge is None else f"{GENRES[g]} / {GENRES[bridge]}",
                 )
                 self.raw[tid] = (offset + artist_center + 0.45 * rng.normal(0, 1, dim)).astype(np.float32)
                 self.genre[tid] = g if bridge is None else -1
@@ -130,6 +141,7 @@ class DemoWorld:
         for g in LIKED_GENRES:
             for tid in pick(g, 8):
                 self.tracks[tid].starred = True
+                self.tracks[tid].starred_at = now - (1 + zlib.crc32(tid.encode()) % 300) * DAY
             for tid in pick(g, 14):
                 self.tracks[tid].play_count = int(rng.integers(2, 25))
                 self.tracks[tid].last_played = now - float(rng.uniform(1, 40)) * DAY
@@ -160,6 +172,9 @@ class DemoWorld:
 
     def ping(self) -> bool:
         return True
+
+    def server_info(self) -> dict:
+        return {"type": "demo", "version": "синтетическая библиотека"}
 
     def sync(self) -> LibrarySnapshot:
         return LibrarySnapshot(
@@ -194,7 +209,12 @@ class DemoWorld:
     def set_rating(self, item_id: str, rating: int) -> None:
         self._item(item_id).rating = rating
 
-    def stream(self, track_id: str, range_header: str | None = None) -> Media:
+    def create_playlist(self, name: str, track_ids: list[str]) -> Playlist:
+        playlist = Playlist(f"demo-pl-{len(self.playlists) + 1}", name, list(track_ids), changed=time.time())
+        self.playlists.append(playlist)
+        return replace(playlist, track_ids=list(track_ids))
+
+    def stream(self, track_id: str, range_header: str | None = None, max_bitrate: int = 0) -> Media:
         if track_id not in self.tracks:
             return Media(404, "text/plain", {}, [b"not found"])
         data = self._audio(track_id)

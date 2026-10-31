@@ -60,17 +60,37 @@ def test_unknown_session_is_404(client):
 
 def test_continue_and_seed_waves(client):
     seeds = [client.post("/api/wave/start", json={}).json()["track"]["id"]]
-    state = client.post("/api/continue", json={"track_ids": seeds}).json()
-    assert state["track"]["id"] not in seeds
-    assert state["track"]["reason"].startswith("Похоже на плейлист")
+    state = client.post("/api/continue", json={"track_ids": seeds, "title": "Мой список"}).json()
+    assert state["kind"] == "steer" and state["track"]["id"] not in seeds
+    reasons = [t["reason"] for t in [state["track"], *state["upcoming"]]]
+    assert any(r == "Похоже на «Мой список»" for r in reasons)  # часть — похожее на список
+    assert any(not r.startswith("Похоже") for r in reasons)  # часть — ваш вкус
 
     by_playlist = client.post("/api/wave/start", json={"seed": {"type": "playlist", "id": "demo-pl-evening"}}).json()
-    assert by_playlist["kind"] == "seed" and by_playlist["title"] == "Вечер"
-    assert by_playlist["track"]["reason"] == "Волна по: Вечер"
+    assert by_playlist["kind"] == "steer" and by_playlist["title"] == "Вечер"
 
-    artist_id = by_playlist["track"]["artist_id"]
-    by_artist = client.post("/api/wave/start", json={"seed": {"type": "artist", "id": artist_id}}).json()
+    track = by_playlist["track"]
+    by_track = client.post("/api/wave/start", json={"seed": {"type": "track", "id": track["id"]}}).json()
+    assert by_track["title"] == track["title"] and by_track["track"]["id"] != track["id"]
+    debug = client.get(f"/api/wave/{by_track['session']}/debug").json()
+    assert debug["steer"]["kind"] == "track" and debug["steer"]["strength"] == 0.65
+
+    by_artist = client.post("/api/wave/start", json={"seed": {"type": "artist", "id": track["artist_id"]}}).json()
     assert by_artist["track"] is not None
+
+
+def test_mix_by_song_and_save_as_playlist(client):
+    seed = client.get("/api/library/recent").json()["tracks"][0]
+    mix = client.post("/api/mix", json={"seed": {"type": "track", "id": seed["id"]}, "size": 15}).json()
+    ids = [t["id"] for t in mix["tracks"]]
+    assert ids[0] == seed["id"] and len(ids) == 15 and len(set(ids)) == 15
+    assert mix["title"] == f"Похоже на «{seed['title']}»"
+
+    saved = client.post("/api/playlists", json={"name": mix["title"], "track_ids": ids}).json()
+    assert saved["count"] == 15
+    playlists = client.get("/api/library/playlists").json()["items"]
+    assert any(p["id"] == saved["id"] and p["title"] == mix["title"] for p in playlists)
+    assert len(client.get(f"/api/playlist/{saved['id']}").json()["tracks"]) == 15
 
 
 def test_events_outside_wave_and_entity_likes_feed_taste(client):
@@ -98,3 +118,27 @@ def test_stream_supports_range_and_static_ui(client):
     page = client.get("/")
     assert page.status_code == 200 and "Моя волна" in page.text
     assert client.get("/topo.js").status_code == 200
+
+
+def test_queue_refills_in_background_and_cache_warms_up(client):
+    import time
+
+    state = client.post("/api/wave/start", json={}).json()
+    sid = state["session"]
+    session = client.app.state.runtime.sessions[sid]
+    assert session.background_refill
+    seen = {state["track"]["id"]}
+    for _ in range(6):  # быстрые пропуски: ответ берётся из готовой очереди, дозаполнение — в фоне
+        state = client.post(f"/api/wave/{sid}/advance", json={"track_id": state["track"]["id"], "outcome": "skip",
+                                                                "position": 2}).json()
+        assert state["track"] and state["track"]["id"] not in seen
+        seen.add(state["track"]["id"])
+
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        server = client.get("/api/server").json()
+        if not server["warm"]["running"] and server["warm"]["total"] and len(session.queue) >= session.LOW_WATER:
+            break
+        time.sleep(0.1)
+    assert server["warm"]["done"] == server["warm"]["total"] == 640
+    assert len(session.queue) >= session.LOW_WATER

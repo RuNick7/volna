@@ -15,7 +15,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from volna.demo import GENRES, DemoWorld  # noqa: E402
-from volna.engine import WaveSession  # noqa: E402
+from volna.engine import Steer, WaveSession  # noqa: E402
 from volna.profile import build_context_profile, build_profile  # noqa: E402
 from volna.services import Deps, Vectors  # noqa: E402
 from volna.store import Store  # noqa: E402
@@ -80,7 +80,8 @@ def continuation_drift(length: int = 40, seed: int = 3) -> dict:
 
     taste = build_profile(deps)
     context = build_context_profile(deps, playlist, taste)
-    session = WaveSession(deps, context, "balanced", taste=taste, exclude=playlist, kind="continue", seed=seed)
+    steer = Steer(context, "list", title="Пост-рок + Неоклассика")
+    session = WaveSession(deps, taste, "balanced", steer=steer, exclude=playlist, seed=seed)
     ours = []
     track = session.start()
     while track is not None and len(ours) < length:
@@ -137,6 +138,28 @@ def settings_effect(n: int = 25, seeds: int = 3) -> list[dict]:
     return rows
 
 
+def wave_by_track(seeds: int = 3, n: int = 25) -> list[dict]:
+    """Волна по треку из жанра, которого нет во вкусе (Неоклассика): как сила смещения меняет выдачу."""
+    from volna.settings import WaveSettings
+
+    rows = []
+    for strength in (0.35, 0.65, 0.9):
+        same, liked = [], []
+        for seed in range(seeds):
+            world, deps = make_deps()
+            taste = build_profile(deps)
+            tid = [i for i in world.ids if world.genre[i] == 7][5 + seed]
+            steer = Steer(build_context_profile(deps, [tid], taste), "track", tid, "трек")
+            session = WaveSession(deps, taste, WaveSettings(steer=strength), steer=steer, exclude=[tid], seed=seed)
+            track = session.start()
+            for _ in range(n):
+                same.append(world.genre[track.id] == 7)
+                liked.append(world.genre[track.id] in (0, 1, 3))
+                track = session.advance(track.id, "complete", track.duration, track.duration)
+        rows.append({"strength": strength, "same": np.mean(same), "liked": np.mean(liked)})
+    return rows
+
+
 def main() -> None:
     print("1. Волна учится на пропусках (слушатель разлюбил джаз)\n")
     print(f"{'сессия':>6} {'дослушано':>10} {'доля джаза':>11} {'тот же жанр после скипа':>24}  что играло чаще всего")
@@ -149,11 +172,16 @@ def main() -> None:
     print("\n2. Продолжение плейлиста «Пост-рок + Неоклассика», 40 треков\n")
     drift = continuation_drift()
     print(f"{'':<22}{'в жанрах плейлиста':>20}{'баланс жанров':>15}{'последние 10':>14}")
-    for name, label in (("volna", "Volna (якоря)"), ("last_song_radio", "Радио по последней")):
+    for name, label in (("volna", "Volna (смещение)"), ("last_song_radio", "Радио по последней")):
         s = drift[name]
         print(f"{label:<22}{s['in_playlist']:>20.0%}{s['balance']:>15.0%}{s['last_10_in_playlist']:>14.0%}")
 
-    print("\n3. Настройки волны (энергия и «инструментальность» по шкале 0–1)\n")
+    print("\n3. Моя волна по треку из Неоклассики (её нет во вкусе слушателя)\n")
+    print(f"{'смещение':>9}{'похожее на трек':>17}{'из любимых жанров':>19}")
+    for row in wave_by_track():
+        print(f"{row['strength']:>9.2f}{row['same']:>17.0%}{row['liked']:>19.0%}")
+
+    print("\n4. Настройки волны (энергия и «инструментальность» по шкале 0–1)\n")
     print(f"{'':<24}{'энергия':>9}{'без слов':>10}{'новое':>8}")
     for row in settings_effect():
         print(f"{row['label']:<24}{row['energy']:>9.2f}{row['instrumental']:>10.2f}{row['new']:>8.0%}")

@@ -17,6 +17,9 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx пишет каждый запрос вместе с адресом, а в адресах Subsonic — токен авторизации
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     settings = Settings.from_env(force_demo=args.demo)
     host = args.host or settings.host
     port = args.port or settings.port

@@ -294,7 +294,7 @@ def build_profile(
     positive = sorted((i for i, w in weight.items() if w > 0.2 and not banned(i)), key=weight.get, reverse=True)
     positive = positive[:max_positive]
     negative = [i for i, w in weight.items() if w < -0.5 or i in disliked][:300]
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(len(snapshot.songs))  # выборка для среднего: стабильна между сборками
     sample = [str(i) for i in rng.choice([t.id for t in snapshot.songs], size=min(300, len(snapshot.songs)), replace=False)]
     event_ids = [e.track_id for e in events if e.entity == "track"]
     raw = deps.vectors.get(positive + negative + event_ids + sample)

@@ -11,6 +11,7 @@ from datetime import datetime
 
 import httpx
 
+from .config import normalize_url
 from .models import Entity, LibrarySnapshot, Media, Playlist, Track
 from .store import Store
 
@@ -47,6 +48,11 @@ def parse_song(s: dict) -> Track:
         last_played=_iso_ts(s.get("played")),
         starred=bool(s.get("starred")),
         rating=int(s.get("userRating") or 0),
+        starred_at=_iso_ts(s.get("starred")),
+        track_no=int(s.get("track") or 0),
+        disc=int(s.get("discNumber") or 0),
+        year=int(s.get("year") or 0),
+        genre=s.get("genre") or "",
     )
 
 
@@ -58,6 +64,12 @@ def parse_entity(d: dict) -> Entity:
         starred=bool(d.get("starred")),
         rating=int(d.get("userRating") or 0),
         play_count=int(d.get("playCount") or 0),
+        artist_id=str(d.get("artistId", "")),
+        cover_id=str(d.get("coverArt", "")),
+        year=int(d.get("year") or 0),
+        song_count=int(d.get("songCount") or 0),
+        album_count=int(d.get("albumCount") or 0),
+        created=_iso_ts(d.get("created")),
     )
 
 
@@ -66,7 +78,7 @@ class Navidrome:
     PAGE = 500
 
     def __init__(self, url: str, user: str, password: str, store: Store, timeout: float = 15.0):
-        self.base = url.rstrip("/")
+        self.base = normalize_url(url)
         self.user = user
         self.password = password
         self.store = store
@@ -90,6 +102,10 @@ class Navidrome:
     def ping(self) -> bool:
         self.call("ping")
         return True
+
+    def server_info(self) -> dict:
+        body = self.call("ping")
+        return {"type": body.get("type", "subsonic"), "version": body.get("serverVersion") or body.get("version", "")}
 
     # --- история и вкус ---
 
@@ -225,13 +241,28 @@ class Navidrome:
     def set_rating(self, track_id: str, rating: int) -> None:
         self.call("setRating", id=track_id, rating=rating)
 
+    def create_playlist(self, name: str, track_ids: list[str]) -> Playlist:
+        body = self.call("createPlaylist", name=name, songId=list(track_ids))
+        created = body.get("playlist") or {}
+        if not created.get("id"):
+            # старые сервера не возвращают созданный плейлист: ищем свежий с этим именем
+            listed = self.call("getPlaylists").get("playlists", {}).get("playlist", [])
+            same = [p for p in listed if p.get("name") == name]
+            created = max(same, key=lambda p: p.get("created", ""), default={"id": "", "name": name})
+        return Playlist(id=str(created.get("id", "")), name=created.get("name", name),
+                        track_ids=list(track_ids), changed=time.time())
+
     # --- медиа ---
 
-    def stream(self, track_id: str, range_header: str | None = None) -> Media:
+    def stream(self, track_id: str, range_header: str | None = None, max_bitrate: int = 0) -> Media:
+        """Поток трека; max_bitrate > 0 просит Navidrome перекодировать в mp3 с этим битрейтом."""
+        params = {**self._auth(), "id": track_id}
+        if max_bitrate:
+            params.update(maxBitRate=max_bitrate, format="mp3")
         request = self.http.build_request(
             "GET",
             f"{self.base}/rest/stream",
-            params={**self._auth(), "id": track_id},
+            params=params,
             headers={"Range": range_header} if range_header else {},
         )
         resp = self.http.send(request, stream=True)

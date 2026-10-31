@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
@@ -19,6 +20,49 @@ def load_env_file(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def normalize_url(url: str) -> str:
+    """Адрес сервера как его ввёл человек: без схемы считаем http для локальной сети, иначе https."""
+    url = url.strip().rstrip("/")
+    if url and "://" not in url:
+        host = url.split("/")[0].split(":")[0]
+        local = host == "localhost" or host.endswith(".local") or host.replace(".", "").isdigit()
+        url = ("http://" if local else "https://") + url
+    return url
+
+
+@dataclass(frozen=True)
+class ServerConfig:
+    """Куда подключаться: Navidrome обязателен, AudioMuse нужен для волны."""
+
+    navidrome_url: str
+    navidrome_user: str
+    navidrome_password: str
+    audiomuse_url: str = ""
+    audiomuse_token: str = ""
+    audiomuse_user: str = ""  # вместо токена можно войти логином и паролем AudioMuse
+    audiomuse_password: str = ""
+
+    @property
+    def key(self) -> str:
+        """Свой файл базы на каждый сервер и логин, чтобы истории не смешивались."""
+        return hashlib.sha1(f"{self.navidrome_url}|{self.navidrome_user}".encode()).hexdigest()[:10]
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def public(self) -> dict:
+        """То, что можно показать в интерфейсе: без пароля и токена."""
+        return {
+            "navidrome_url": self.navidrome_url,
+            "navidrome_user": self.navidrome_user,
+            "audiomuse_url": self.audiomuse_url,
+            "has_password": bool(self.navidrome_password),
+            "has_token": bool(self.audiomuse_token),
+            "audiomuse_user": self.audiomuse_user,
+            "has_audiomuse_password": bool(self.audiomuse_password),
+        }
+
+
 @dataclass(frozen=True)
 class Settings:
     demo: bool
@@ -30,6 +74,16 @@ class Settings:
     db_path: Path = SERVICE_DIR / "data" / "volna.db"
     host: str = "127.0.0.1"
     port: int = 8765
+    force_demo: bool = False  # --demo: не подключаться к сохранённому серверу
+
+    @property
+    def env_server(self) -> ServerConfig | None:
+        if self.demo or not self.navidrome_url:
+            return None
+        return ServerConfig(
+            self.navidrome_url, self.navidrome_user, self.navidrome_password, self.audiomuse_url, self.audiomuse_token,
+            os.environ.get("AUDIOMUSE_USER", ""), os.environ.get("AUDIOMUSE_PASSWORD", ""),
+        )
 
     @classmethod
     def from_env(cls, force_demo: bool = False) -> "Settings":
@@ -38,8 +92,10 @@ class Settings:
         env = os.environ.get
         navidrome_url = env("NAVIDROME_URL", "").rstrip("/")
         demo = force_demo or env("VOLNA_DEMO", "").lower() in ("1", "true", "yes") or not navidrome_url
-        default_db = SERVICE_DIR / "data" / ("demo.db" if demo else "volna.db")
+        # настройки, сохранённый сервер; история каждого сервера лежит рядом в своём файле
+        default_db = SERVICE_DIR / "data" / "volna.db"
         return cls(
+            force_demo=force_demo,
             demo=demo,
             navidrome_url=navidrome_url,
             navidrome_user=env("NAVIDROME_USER", ""),

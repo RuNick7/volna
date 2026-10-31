@@ -103,6 +103,10 @@ class Navidrome:
         self.call("ping")
         return True
 
+    def is_admin(self) -> bool:
+        """Администратор Navidrome может менять настройки сервера и в Volna."""
+        return bool(self.call("getUser", username=self.user).get("user", {}).get("adminRole"))
+
     def server_info(self) -> dict:
         body = self.call("ping")
         return {"type": body.get("type", "subsonic"), "version": body.get("serverVersion") or body.get("version", "")}

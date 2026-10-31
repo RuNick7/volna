@@ -165,6 +165,10 @@ private fun ServerPage() {
             )
         }
     }
+    if (i != null && !i.canManage) {
+        Hint("Адреса Navidrome и AudioMuse настраивает администратор Navidrome. Ваши волна, история и настройки — только ваши.")
+        return
+    }
     Spacer(Modifier.height(20.dp))
     GroupLabel("Navidrome")
     ServerField(fields, "navidrome_url", "Адрес сервера", KeyboardType.Uri)
@@ -209,7 +213,7 @@ private fun ServerPage() {
         }
     }
     result?.let { Hint(it) }
-    Hint("Пароли и токен хранятся только на компьютере, где запущен сервис Volna, и не показываются здесь.")
+    Hint("Пароли и токен хранятся только на сервере, где работает Volna, и не показываются здесь.")
 }
 
 @Composable

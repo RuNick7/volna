@@ -30,7 +30,7 @@ def main() -> None:
         else "сервер из настроек или демо-библиотека"
     )
     if settings.auth:
-        source += ", вход по аккаунту Navidrome"
+        source += ", вход для любого пользователя Navidrome"
     print(f"Volna: http://{host}:{port}  ({source})")
     uvicorn.run(create_app(settings), host=host, port=port, log_level="warning")
 

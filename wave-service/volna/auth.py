@@ -1,8 +1,8 @@
 """Вход в сервис аккаунтом Navidrome.
 
 Нужен, когда сервис открыт в интернет: без входа любой мог бы слушать библиотеку и
-менять настройки. Пускаем только владельца, то есть аккаунт, под которым сервис сам
-ходит в Navidrome. Пароль проверяет Navidrome, у нас хранятся лишь хэши выданных токенов.
+менять настройки. Войти может любой пользователь Navidrome, пароль проверяет сам Navidrome;
+токены сервис хранит только хэшами.
 Клиент присылает токен заголовком `Authorization: Bearer …`, веб-версия — cookie.
 """
 
@@ -75,14 +75,7 @@ class Auth:
                 failures.popleft()
             if len(failures) >= MAX_FAILURES:
                 raise LoginError(429, "Слишком много попыток входа, подождите несколько минут")
-        try:
-            ok = bool(user and password) and self.verify(user, password)
-        except LoginError as exc:
-            if exc.status == 403:  # чужой аккаунт — тоже неудачная попытка, иначе можно перебирать имена
-                with self._lock:
-                    self._failures[ip].append(now)
-            raise
-        if not ok:
+        if not user or not password or not self.verify(user, password):
             with self._lock:
                 self._failures[ip].append(now)
             raise LoginError(401, "Неверный логин или пароль")

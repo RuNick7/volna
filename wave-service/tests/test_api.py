@@ -125,7 +125,7 @@ def test_queue_refills_in_background_and_cache_warms_up(client):
 
     state = client.post("/api/wave/start", json={}).json()
     sid = state["session"]
-    session = client.app.state.runtime.sessions[sid]
+    session = client.app.state.runtime.main.sessions[sid]
     assert session.background_refill
     seen = {state["track"]["id"]}
     for _ in range(6):  # быстрые пропуски: ответ берётся из готовой очереди, дозаполнение — в фоне

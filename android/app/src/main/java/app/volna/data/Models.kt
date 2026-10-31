@@ -167,6 +167,7 @@ data class ServerInfo(
     val warmDone: Int,
     val warmTotal: Int,
     val warmRunning: Boolean,
+    val canManage: Boolean, // менять сервер может администратор Navidrome
 ) {
     companion object {
         fun from(o: JSONObject): ServerInfo {
@@ -190,6 +191,7 @@ data class ServerInfo(
                 warmDone = warm.optInt("done"),
                 warmTotal = warm.optInt("total"),
                 warmRunning = warm.optBoolean("running"),
+                canManage = o.optBoolean("can_manage", true),
             )
         }
     }

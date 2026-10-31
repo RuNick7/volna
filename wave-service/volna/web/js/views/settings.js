@@ -91,6 +91,11 @@ function serverPage(root, { navigate }) {
   );
   const disconnect = h("button", { class: "link-btn", type: "button", onClick: forget }, "Отключиться и вернуться к демо-библиотеке");
   root.append(pageHeader("Сервер", { back: true }), form, disconnect);
+  get("/api/server").then((s) => {
+    if (s.can_manage !== false) return;
+    form.replaceWith(h("p", { class: "hint" }, "Адреса Navidrome и AudioMuse настраивает администратор Navidrome. Ваши волна, история и настройки — только ваши."));
+    disconnect.remove();
+  }).catch(() => {});
 
   const values = () => Object.fromEntries(new FormData(form).entries());
   const showResult = (result) => {

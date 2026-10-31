@@ -60,17 +60,57 @@ def test_login_attempts_are_limited(tmp_path):
     assert client.post("/api/auth/login", json={"user": "owner", "password": "secret"}).status_code == 429
 
 
-def test_only_the_owner_account_may_log_in(tmp_path, monkeypatch):
+def test_any_navidrome_user_gets_own_space(tmp_path, monkeypatch):
+    import volna.app as app_module
     import volna.navidrome as navidrome
-
-    pinged = []
-    monkeypatch.setattr(navidrome.Navidrome, "ping", lambda self: pinged.append(self.user) or True)
-    app = create_app(Settings(demo=True, db_path=tmp_path / "test.db", auth=True))
     from volna.config import ServerConfig
+    from volna.demo import DemoWorld
+    from volna.services import Deps
+    from volna.store import Store
 
-    app.state.runtime.server = ServerConfig("http://navidrome:4533", "Owner", "pw")
+    accounts = {"owner": "pw-owner", "guest": "pw-guest"}
+
+    def ping(self):
+        if accounts.get(self.user.lower()) != self.password:  # Navidrome не различает регистр логина
+            raise navidrome.SubsonicError("Wrong username or password")
+        return True
+
+    monkeypatch.setattr(navidrome.Navidrome, "ping", ping)
+    monkeypatch.setattr(navidrome.Navidrome, "is_admin", lambda self: False)
+    built = []
+
+    def fake_user_deps(server, shared, data_dir):
+        built.append((server.navidrome_user, server.navidrome_password))
+        world = DemoWorld()
+        return Deps(library=world, sim=shared.sim, store=Store(data_dir / f"user-{server.navidrome_user}.db"),
+                    vectors=shared.vectors, demo=True)
+
+    monkeypatch.setattr(app_module, "user_deps", fake_user_deps)
+    app = create_app(Settings(demo=True, db_path=tmp_path / "test.db", auth=True))
+    app.state.runtime.server = ServerConfig("http://navidrome:4533", "owner", "pw-owner")
     client = TestClient(app)
-    guest = client.post("/api/auth/login", json={"user": "guest", "password": "x"})
-    assert guest.status_code == 403 and "не подключён" in guest.json()["detail"]
-    assert client.post("/api/auth/login", json={"user": "owner", "password": "x"}).status_code == 200
-    assert pinged == ["owner"]  # чужой логин даже не проверяем в Navidrome
+
+    def login(user, password):
+        response = client.post("/api/auth/login", json={"user": user, "password": password})
+        return response.status_code, {"Authorization": f"Bearer {response.json().get('token', '')}"}
+
+    assert login("guest", "wrong")[0] == 401
+    assert login("stranger", "pw-guest")[0] == 401
+    status, owner = login("owner", "pw-owner")
+    assert status == 200
+    status, guest = login("Guest", "pw-guest")  # регистр логина не важен
+    assert status == 200
+
+    # у каждого свои волны и свои настройки
+    sid = client.post("/api/wave/start", json={}, headers=owner).json()["session"]
+    assert client.post(f"/api/wave/{sid}/shake", headers=guest).status_code == 404
+    client.put("/api/settings", json={"character": "discover"}, headers=guest)
+    assert client.get("/api/settings", headers=owner).json()["settings"]["character"] != "discover"
+    assert client.get("/api/settings", headers=guest).json()["settings"]["character"] == "discover"
+    assert built == [("Guest", "pw-guest")]  # пространство гостя заведено один раз, его же паролем
+
+    # сервер настраивает только администратор; гостю не показываем учётку сервиса
+    info = client.get("/api/server", headers=guest).json()
+    assert info["can_manage"] is False and "navidrome_user" not in info["server"]
+    assert client.put("/api/server", json={"navidrome_url": "x", "navidrome_user": "y"}, headers=guest).status_code == 403
+    assert client.get("/api/server", headers=owner).json()["can_manage"] is True

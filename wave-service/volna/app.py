@@ -12,11 +12,12 @@ import logging
 import threading
 import time
 from collections import Counter, defaultdict
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -29,7 +30,7 @@ from .engine import Steer, WaveSession, build_mix, classify, register_playback
 from .library import LibraryIndex, track_json
 from .models import LibrarySnapshot
 from .profile import TasteProfile, build_context_profile, build_profile
-from .services import Deps, NoSimilarity, build_deps
+from .services import Deps, NoSimilarity, build_deps, user_deps
 from .settings import ACTIVITIES, CHARACTERS, MOODS, WaveSettings
 from .store import Event, Store
 
@@ -39,6 +40,7 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 SETTINGS_KEY = "wave_settings"
 SERVER_KEY = "server"
 PREFS_KEY = "preferences"
+USERS_KEY = "users"  # кто входил: логин, пароль Navidrome и администратор ли он
 QUALITY = {"original": 0, "320": 320, "192": 192, "128": 128}
 DEFAULT_PREFS = {"quality": "original", "continue_after_end": True}
 
@@ -272,8 +274,43 @@ class ProfileManager:
             log.info("Кэш волны прогрет за %.0f с: загружено %d записей", time.time() - started, fetched)
 
 
+class Space:
+    """Всё своё у одного пользователя Navidrome: библиотека его глазами (лайки, прослушивания),
+    история волны, профиль вкуса, волны и настройки. Общий у всех только кэш звучания."""
+
+    MAX_SESSIONS = 20
+
+    def __init__(self, deps: Deps, user: str = "", defaults: Store | None = None):
+        self.deps = deps
+        self.user = user
+        self.defaults = defaults  # у основного пространства — настройки времён, когда пользователь был один
+        self.profiles = ProfileManager(deps)
+        self.sessions: dict[str, WaveSession] = {}
+
+    @property
+    def store(self) -> Store:
+        return self.deps.store
+
+    def setting(self, key: str):
+        value = self.store.setting(key)
+        if value is None and self.defaults is not None:
+            value = self.defaults.setting(key)
+        return value
+
+    def settings(self) -> WaveSettings:
+        return WaveSettings.from_dict(self.setting(SETTINGS_KEY))
+
+    def preferences(self) -> dict:
+        return {**DEFAULT_PREFS, **(self.setting(PREFS_KEY) or {})}
+
+
 class Runtime:
-    """Текущее подключение: демо или сервер. Меняется на лету из настроек."""
+    """Текущее подключение: демо или сервер. Меняется на лету из настроек.
+
+    Сервис подключается к Navidrome одним аккаунтом (его пространство — основное, с него же
+    прогревается общий кэш звучания), а входить может любой пользователь Navidrome: у каждого
+    своё пространство, которое заводится при первом обращении.
+    """
 
     def __init__(self, settings: Settings, deps: Deps | None = None):
         self.settings = settings
@@ -305,9 +342,53 @@ class Runtime:
             self.deps = deps
             self.server = server
             self.source = source
-            self.profiles = ProfileManager(deps)
-            self.sessions: dict[str, WaveSession] = {}
-        self.profiles.start()
+            self.main = Space(deps, server.navidrome_user if server else "", defaults=self.config)
+            self.spaces: dict[str, Space] = {}
+        self.main.profiles.start()
+
+    # --- пользователи ---
+
+    def users(self) -> dict[str, dict]:
+        return self.config.setting(USERS_KEY) or {}
+
+    def remember_user(self, user: str, password: str, admin: bool) -> None:
+        """Пароль нужен, чтобы ходить в Navidrome от имени пользователя: лежит рядом с паролем сервиса."""
+        key = user.casefold()
+        with self.lock:
+            users = self.users()
+            known = users.get(key)
+            users[key] = {"user": user, "password": password, "admin": admin}
+            self.config.put_setting(USERS_KEY, users)
+            if known is not None and known["password"] != password:
+                self.spaces.pop(key, None)  # пароль сменился: клиента Navidrome соберём заново
+
+    def is_admin(self, user: str | None) -> bool:
+        if not user:
+            return False
+        server = self.server
+        if server is not None and user.casefold() == server.navidrome_user.casefold():
+            return True  # кто подключил сервис, тот им и управляет
+        return bool(self.users().get(user.casefold(), {}).get("admin"))
+
+    def space(self, user: str | None) -> Space:
+        """Пространство пользователя. Без входа (сервис дома или демо) — основное."""
+        server = self.server
+        if not user or server is None or user.casefold() == server.navidrome_user.casefold():
+            return self.main
+        key = user.casefold()
+        with self.lock:
+            space = self.spaces.get(key)
+            created = space is None
+            if created:
+                creds = self.users().get(key)
+                if creds is None:
+                    raise LookupError(user)
+                account = replace(server, navidrome_user=creds["user"], navidrome_password=creds["password"])
+                space = Space(user_deps(account, self.deps, self.settings.db_path.parent), creds["user"])
+                self.spaces[key] = space
+        if created:
+            space.profiles.start()
+        return space
 
 
 def check_server(server: ServerConfig) -> dict:
@@ -358,32 +439,48 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
     auth = Auth(rt.config, settings.auth)
     app.state.auth = auth
 
-    def owner_login(user: str, password: str) -> bool:
-        """Пускаем только аккаунт, под которым сервис ходит в Navidrome; пароль проверяет сам Navidrome."""
+    def navidrome_login(user: str, password: str) -> bool:
+        """Войти может любой пользователь Navidrome: пароль проверяет сам Navidrome."""
         from .navidrome import Navidrome, SubsonicError
 
         server = rt.server
         if server is None:
             raise LoginError(503, "Сервис ещё не подключён к Navidrome")
-        if user.casefold() != server.navidrome_user.casefold():
-            raise LoginError(403, "Этот аккаунт Navidrome не подключён к Volna: войдите тем, к которому подключён сервис")
+        client = Navidrome(server.navidrome_url, user, password, Store(":memory:"), timeout=8)
         try:
-            Navidrome(server.navidrome_url, user, password, Store(":memory:"), timeout=8).ping()
+            client.ping()
         except SubsonicError:
             return False
         except httpx.HTTPError as exc:
             raise LoginError(503, "Navidrome не отвечает, попробуйте позже") from exc
+        try:
+            admin = client.is_admin()
+        except Exception:  # noqa: BLE001 — сервер без getUser: обычный пользователь
+            admin = False
+        rt.remember_user(user, password, admin)
         return True
 
-    auth.verify = owner_login
+    auth.verify = navidrome_login
     open_paths = {"/api/health", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
 
     @app.middleware("http")
     async def require_login(request: Request, call_next):
         path = request.url.path
-        if auth.enabled and path.startswith("/api/") and path not in open_paths and not auth.user(request_token(request)):
+        user = auth.user(request_token(request)) if auth.enabled else None
+        if auth.enabled and path.startswith("/api/") and path not in open_paths and not user:
             return JSONResponse({"detail": "Нужно войти"}, status_code=401)
+        request.state.user = user
         return await call_next(request)
+
+    def current_space(request: Request) -> Space:
+        try:
+            return rt.space(getattr(request.state, "user", None))
+        except LookupError as exc:  # токен есть, а учётки нет (например, данные сервиса стёрли)
+            raise HTTPException(401, "Войдите снова") from exc
+
+    def require_admin(request: Request) -> None:
+        if auth.enabled and not rt.is_admin(getattr(request.state, "user", None)):
+            raise HTTPException(403, "Менять сервер может только администратор Navidrome")
 
     @app.middleware("http")
     async def fresh_ui(request: Request, call_next):
@@ -392,12 +489,6 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         if not request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-cache"
         return response
-
-    def saved_settings() -> WaveSettings:
-        return WaveSettings.from_dict(rt.config.setting(SETTINGS_KEY))
-
-    def preferences() -> dict:
-        return {**DEFAULT_PREFS, **(rt.config.setting(PREFS_KEY) or {})}
 
     def refill_later(session: WaveSession) -> None:
         """Следующую порцию собираем после ответа и без замка на время сетевых запросов:
@@ -422,32 +513,32 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
 
         threading.Thread(target=run, name="volna-refill", daemon=True).start()
 
-    def remember(session: WaveSession) -> None:
+    def remember(sp: Space, session: WaveSession) -> None:
         session.background_refill = True
         session.low_water = 6
-        rt.sessions[session.id] = session
-        while len(rt.sessions) > 20:
-            oldest = min(rt.sessions.values(), key=lambda s: s.touched)
-            rt.sessions.pop(oldest.id)
+        sp.sessions[session.id] = session
+        while len(sp.sessions) > Space.MAX_SESSIONS:
+            oldest = min(sp.sessions.values(), key=lambda s: s.touched)
+            sp.sessions.pop(oldest.id)
 
-    def session_or_404(session_id: str) -> WaveSession:
-        session = rt.sessions.get(session_id)
+    def session_or_404(sp: Space, session_id: str) -> WaveSession:
+        session = sp.sessions.get(session_id)  # чужие волны не видно: у каждого свои
         if session is None:
             raise HTTPException(404, "Сессия не найдена: начните волну заново")
         return session
 
-    def taste_or_503() -> TasteProfile:
-        if isinstance(rt.deps.sim, NoSimilarity):
+    def taste_or_503(sp: Space) -> TasteProfile:
+        if isinstance(sp.deps.sim, NoSimilarity):
             raise HTTPException(503, NoSimilarity.MESSAGE)
         try:
-            return rt.profiles.get()
+            return sp.profiles.get()
         except Exception as exc:  # noqa: BLE001
             log.exception("Не удалось собрать профиль вкуса")
             raise HTTPException(503, f"Не удалось собрать профиль вкуса: {exc}") from exc
 
-    def index_or_503() -> LibraryIndex:
+    def index_or_503(sp: Space) -> LibraryIndex:
         try:
-            return rt.profiles.index()
+            return sp.profiles.index()
         except Exception as exc:  # noqa: BLE001
             log.exception("Не удалось загрузить библиотеку")
             raise HTTPException(503, f"Не удалось загрузить библиотеку: {exc}") from exc
@@ -462,10 +553,10 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
             "upcoming": [track_json(t, session.reason(t.id)) for t in session.queue[:3]],
         }
 
-    def seed_tracks(seed: Seed) -> tuple[list[str], str]:
-        index = index_or_503()
+    def seed_tracks(sp: Space, seed: Seed) -> tuple[list[str], str]:
+        index = index_or_503(sp)
         if seed.type == "track":
-            track = index.songs.get(seed.id) or rt.deps.library.songs([seed.id]).get(seed.id)
+            track = index.songs.get(seed.id) or sp.deps.library.songs([seed.id]).get(seed.id)
             return [seed.id], (track.title if track else "трек")
         if seed.type == "album":
             songs = index.by_album.get(seed.id, [])
@@ -476,20 +567,20 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         playlist = index.playlists.get(seed.id)
         return (list(playlist.track_ids), playlist.name) if playlist else ([], "плейлист")
 
-    def make_steer(seed: Seed, taste: TasteProfile) -> tuple[Steer, list[str]]:
+    def make_steer(sp: Space, seed: Seed, taste: TasteProfile) -> tuple[Steer, list[str]]:
         """Источник смещения и что исключить из выдачи (сам трек, альбом или плейлист)."""
-        ids, title = seed_tracks(seed)
+        ids, title = seed_tracks(sp, seed)
         if not ids:
             raise HTTPException(404, "Не нашёл треков для этого элемента")
         try:
-            profile = build_context_profile(rt.deps, ids, taste)
+            profile = build_context_profile(sp.deps, ids, taste)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         exclude = ids if seed.type != "artist" else [seed.id]  # у артиста его же треки звучать могут
         return Steer(profile, seed.type, seed.id, title), exclude
 
-    def mark_starred(item_id: str, entity: str, liked: bool) -> None:
-        index = rt.profiles.loaded_index()
+    def mark_starred(sp: Space, item_id: str, entity: str, liked: bool) -> None:
+        index = sp.profiles.loaded_index()
         if index is not None:
             index.set_starred(item_id, entity, liked)
 
@@ -540,16 +631,22 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         return {"auth": auth.enabled, "user": auth.user(request_token(request)) if auth.enabled else None}
 
     @app.get("/api/server")
-    def get_server() -> dict:
-        index = rt.profiles.loaded_index()
+    def get_server(request: Request, sp: Space = Depends(current_space)) -> dict:
+        index = sp.profiles.loaded_index()
+        manage = not auth.enabled or rt.is_admin(getattr(request.state, "user", None))
+        server = rt.server.public() if rt.server else None
+        if server is not None and not manage:  # остальным незачем видеть учётки сервиса
+            server = {"navidrome_url": server["navidrome_url"], "audiomuse_url": server["audiomuse_url"]}
         return {
             "mode": "demo" if rt.deps.demo else "live",
             "source": rt.source,
-            "server": rt.server.public() if rt.server else None,
-            "syncing": rt.profiles.syncing,
-            "sync_error": rt.profiles.sync_error,
+            "server": server,
+            "can_manage": manage,
+            "user": sp.user,
+            "syncing": sp.profiles.syncing,
+            "sync_error": sp.profiles.sync_error,
             "library": index.stats() if index else None,
-            "warm": rt.profiles.warm,
+            "warm": sp.profiles.warm,
         }
 
     def server_from_form(form: ServerForm) -> ServerConfig:
@@ -567,69 +664,69 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         )
         return ServerConfig(url, user, password, audiomuse, token, am_user, am_password)
 
-    @app.post("/api/server/test")
+    @app.post("/api/server/test", dependencies=[Depends(require_admin)])
     def test_server(form: ServerForm) -> dict:
         return check_server(server_from_form(form))
 
-    @app.put("/api/server")
-    def save_server(form: ServerForm) -> dict:
+    @app.put("/api/server", dependencies=[Depends(require_admin)])
+    def save_server(form: ServerForm, request: Request) -> dict:
         server = server_from_form(form)
         result = check_server(server)
         if not result["navidrome"]["ok"]:
             raise HTTPException(400, result["navidrome"]["error"])
         rt.config.put_setting(SERVER_KEY, server.to_dict())
         rt.connect(server, "saved")
-        rt.profiles.refresh_in_background()
-        return {**result, **get_server()}
+        rt.main.profiles.refresh_in_background()
+        return {**result, **get_server(request, current_space(request))}
 
-    @app.delete("/api/server")
-    def forget_server() -> dict:
+    @app.delete("/api/server", dependencies=[Depends(require_admin)])
+    def forget_server(request: Request) -> dict:
         rt.config.put_setting(SERVER_KEY, None)
         rt.connect(None)
-        return get_server()
+        return get_server(request, current_space(request))
 
     # --- настройки и предпочтения ---
 
     @app.get("/api/settings")
-    def get_settings() -> dict:
+    def get_settings(sp: Space = Depends(current_space)) -> dict:
         return {
-            "settings": saved_settings().to_dict(),
+            "settings": sp.settings().to_dict(),
             "options": {"character": list(CHARACTERS), "mood": list(MOODS), "activity": list(ACTIVITIES)},
         }
 
     @app.put("/api/settings")
-    def put_settings(patch: dict) -> dict:
-        updated = saved_settings().merged(patch)
-        rt.config.put_setting(SETTINGS_KEY, updated.to_dict())
+    def put_settings(patch: dict, sp: Space = Depends(current_space)) -> dict:
+        updated = sp.settings().merged(patch)
+        sp.store.put_setting(SETTINGS_KEY, updated.to_dict())
         return {"settings": updated.to_dict()}
 
     @app.get("/api/preferences")
-    def get_preferences() -> dict:
-        return preferences()
+    def get_preferences(sp: Space = Depends(current_space)) -> dict:
+        return sp.preferences()
 
     @app.put("/api/preferences")
-    def put_preferences(patch: dict) -> dict:
-        prefs = preferences()
+    def put_preferences(patch: dict, sp: Space = Depends(current_space)) -> dict:
+        prefs = sp.preferences()
         if patch.get("quality") in QUALITY:
             prefs["quality"] = patch["quality"]
         if "continue_after_end" in patch:
             prefs["continue_after_end"] = bool(patch["continue_after_end"])
-        rt.config.put_setting(PREFS_KEY, prefs)
+        sp.store.put_setting(PREFS_KEY, prefs)
         return prefs
 
     # --- волна ---
 
     @app.post("/api/wave/start")
-    def start_wave(body: StartRequest) -> dict:
-        taste = taste_or_503()
-        wave_settings = saved_settings().merged(body.settings or {})
+    def start_wave(body: StartRequest, sp: Space = Depends(current_space)) -> dict:
+        taste = taste_or_503(sp)
+        wave_settings = sp.settings().merged(body.settings or {})
         if body.seed is None:
-            session = WaveSession(rt.deps, taste, wave_settings, device=body.device)
+            session = WaveSession(sp.deps, taste, wave_settings, device=body.device)
         else:
             # «Моя волна по…»: та же личная волна, только смещённая к треку, альбому, артисту или плейлисту
-            steer, exclude = make_steer(body.seed, taste)
-            session = WaveSession(rt.deps, taste, wave_settings, steer=steer, exclude=exclude, device=body.device)
-        remember(session)
+            steer, exclude = make_steer(sp, body.seed, taste)
+            session = WaveSession(sp.deps, taste, wave_settings, steer=steer, exclude=exclude, device=body.device)
+        remember(sp, session)
         with session.lock:
             session.start()
             response = state(session)
@@ -637,59 +734,59 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         return response
 
     @app.post("/api/wave/{session_id}/advance")
-    def advance(session_id: str, body: AdvanceRequest) -> dict:
-        session = session_or_404(session_id)
+    def advance(session_id: str, body: AdvanceRequest, sp: Space = Depends(current_space)) -> dict:
+        session = session_or_404(sp, session_id)
         with session.lock:
             session.advance(body.track_id, body.outcome, body.position, body.duration)
             response = state(session)
         refill_later(session)
-        rt.profiles.note_event()
+        sp.profiles.note_event()
         return response
 
     @app.post("/api/wave/{session_id}/like")
-    def like(session_id: str, body: LikeRequest) -> dict:
-        session = session_or_404(session_id)
+    def like(session_id: str, body: LikeRequest, sp: Space = Depends(current_space)) -> dict:
+        session = session_or_404(sp, session_id)
         with session.lock:
             session.like(body.track_id, body.liked)
-        mark_starred(body.track_id, "track", body.liked)
-        rt.profiles.note_event()
+        mark_starred(sp, body.track_id, "track", body.liked)
+        sp.profiles.note_event()
         return state(session)
 
     @app.post("/api/wave/{session_id}/settings")
-    def session_settings(session_id: str, patch: dict) -> dict:
+    def session_settings(session_id: str, patch: dict, sp: Space = Depends(current_space)) -> dict:
         """Поменять настройки на ходу; они же сохраняются как настройки по умолчанию."""
-        session = session_or_404(session_id)
+        session = session_or_404(sp, session_id)
         updated = session.settings.merged(patch)
-        rt.config.put_setting(SETTINGS_KEY, updated.to_dict())
+        sp.store.put_setting(SETTINGS_KEY, updated.to_dict())
         with session.lock:
             session.set_settings(updated)
         return state(session)
 
     @app.post("/api/wave/{session_id}/shake")
-    def shake(session_id: str) -> dict:
-        session = session_or_404(session_id)
+    def shake(session_id: str, sp: Space = Depends(current_space)) -> dict:
+        session = session_or_404(sp, session_id)
         with session.lock:
             session.shake()
         return state(session)
 
     @app.get("/api/wave/{session_id}/debug")
-    def debug(session_id: str) -> dict:
-        return session_or_404(session_id).snapshot()
+    def debug(session_id: str, sp: Space = Depends(current_space)) -> dict:
+        return session_or_404(sp, session_id).snapshot()
 
     @app.post("/api/continue")
-    def continue_playlist(body: ContinueRequest) -> dict:
+    def continue_playlist(body: ContinueRequest, sp: Space = Depends(current_space)) -> dict:
         """Альбом или плейлист закончился: дальше ваша волна, смещённая к нему целиком,
         а не «похожее на последнюю песню»."""
-        taste = taste_or_503()
+        taste = taste_or_503(sp)
         try:
-            context = build_context_profile(rt.deps, body.track_ids, taste)
+            context = build_context_profile(sp.deps, body.track_ids, taste)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         session = WaveSession(
-            rt.deps, taste, saved_settings().merged(body.settings or {}),
+            sp.deps, taste, sp.settings().merged(body.settings or {}),
             steer=Steer(context, "list", "", body.title), exclude=body.track_ids, device=body.device,
         )
-        remember(session)
+        remember(sp, session)
         with session.lock:
             session.start()
             response = state(session)
@@ -699,14 +796,14 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
     # --- плейлисты по песне ---
 
     @app.post("/api/mix")
-    def mix(body: MixRequest) -> dict:
+    def mix(body: MixRequest, sp: Space = Depends(current_space)) -> dict:
         """Собрать плейлист по треку (или альбому, артисту, плейлисту): сохранить или сразу слушать."""
-        taste = taste_or_503()
-        steer, exclude = make_steer(body.seed, taste)
-        tracks = build_mix(rt.deps, taste, steer, saved_settings(), size=body.size, exclude=exclude)
+        taste = taste_or_503(sp)
+        steer, exclude = make_steer(sp, body.seed, taste)
+        tracks = build_mix(sp.deps, taste, steer, sp.settings(), size=body.size, exclude=exclude)
         if body.seed.type == "track":
-            first = (rt.profiles.loaded_index() or index_or_503()).songs.get(body.seed.id)
-            first = first or rt.deps.library.songs([body.seed.id]).get(body.seed.id)
+            first = (sp.profiles.loaded_index() or index_or_503(sp)).songs.get(body.seed.id)
+            first = first or sp.deps.library.songs([body.seed.id]).get(body.seed.id)
             if first is not None:
                 tracks = [first, *tracks[: body.size - 1]]
         reason = f"Похоже на «{steer.title}»"
@@ -718,13 +815,13 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         }
 
     @app.post("/api/playlists")
-    def create_playlist(body: PlaylistCreate) -> dict:
+    def create_playlist(body: PlaylistCreate, sp: Space = Depends(current_space)) -> dict:
         """Сохранить подборку плейлистом в Navidrome: он появится во всех клиентах."""
         try:
-            playlist = rt.deps.library.create_playlist(body.name.strip(), body.track_ids)
+            playlist = sp.deps.library.create_playlist(body.name.strip(), body.track_ids)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"Navidrome не создал плейлист: {exc}") from exc
-        index = rt.profiles.loaded_index()
+        index = sp.profiles.loaded_index()
         if index is not None and playlist.id:
             index.add_playlist(playlist)
         return {"id": playlist.id, "name": playlist.name, "count": len(playlist.track_ids)}
@@ -732,102 +829,102 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
     # --- сигналы вне волны ---
 
     @app.post("/api/events")
-    def playback_event(body: PlaybackEvent) -> dict:
+    def playback_event(body: PlaybackEvent, sp: Space = Depends(current_space)) -> dict:
         """Прослушивание в альбоме, плейлисте или поиске: тоже учит профиль."""
-        index = rt.profiles.loaded_index()
-        track = (index.songs.get(body.track_id) if index else None) or rt.deps.library.songs([body.track_id]).get(body.track_id)
+        index = sp.profiles.loaded_index()
+        track = (index.songs.get(body.track_id) if index else None) or sp.deps.library.songs([body.track_id]).get(body.track_id)
         kind = classify(body.outcome, body.position, body.duration or (track.duration if track else 0.0))
         try:
-            taste = None if isinstance(rt.deps.sim, NoSimilarity) else rt.profiles.get()
+            taste = None if isinstance(sp.deps.sim, NoSimilarity) else sp.profiles.get()
         except Exception:  # noqa: BLE001 — профиля нет, но событие и скроббл всё равно сохраняем
             taste = None
         register_playback(
-            rt.deps, taste, body.track_id, kind, track=track, position=body.position, duration=body.duration,
+            sp.deps, taste, body.track_id, kind, track=track, position=body.position, duration=body.duration,
             context_type=body.context_type, context_id=body.context_id, device=body.device,
         )
-        rt.profiles.note_event()
+        sp.profiles.note_event()
         return {"kind": kind}
 
     @app.post("/api/like")
-    def like_entity(body: EntityLikeRequest) -> dict:
+    def like_entity(body: EntityLikeRequest, sp: Space = Depends(current_space)) -> dict:
         """Лайк трека, альбома или артиста: звезда в Navidrome и событие в профиль."""
         try:
-            (rt.deps.library.star if body.liked else rt.deps.library.unstar)(body.id, body.type)
+            (sp.deps.library.star if body.liked else sp.deps.library.unstar)(body.id, body.type)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"Navidrome не принял отметку: {exc}") from exc
-        rt.deps.store.add_event(
+        sp.deps.store.add_event(
             Event(ts=time.time(), track_id=body.id, kind="like" if body.liked else "unlike", entity=body.type)
         )
-        mark_starred(body.id, body.type, body.liked)
-        rt.profiles.note_event()
+        mark_starred(sp, body.id, body.type, body.liked)
+        sp.profiles.note_event()
         return {"ok": True, "liked": body.liked}
 
     # --- библиотека ---
 
     @app.get("/api/home")
-    def home() -> dict:
-        return {"shelves": index_or_503().home()}
+    def home(sp: Space = Depends(current_space)) -> dict:
+        return {"shelves": index_or_503(sp).home()}
 
     @app.get("/api/library")
-    def library_stats() -> dict:
-        return index_or_503().stats()
+    def library_stats(sp: Space = Depends(current_space)) -> dict:
+        return index_or_503(sp).stats()
 
     @app.post("/api/library/sync")
-    def library_sync() -> dict:
-        rt.profiles.refresh_in_background()
+    def library_sync(sp: Space = Depends(current_space)) -> dict:
+        sp.profiles.refresh_in_background()
         return {"syncing": True}
 
     @app.get("/api/library/albums")
-    def library_albums(sort: str = "alpha", offset: int = 0, limit: int = 60) -> dict:
-        return {"items": index_or_503().albums_sorted(sort, offset, min(limit, 5000))}  # приложение берёт всё и ищет у себя
+    def library_albums(sort: str = "alpha", offset: int = 0, limit: int = 60, sp: Space = Depends(current_space)) -> dict:
+        return {"items": index_or_503(sp).albums_sorted(sort, offset, min(limit, 5000))}  # приложение берёт всё и ищет у себя
 
     @app.get("/api/library/artists")
-    def library_artists(sort: str = "alpha", offset: int = 0, limit: int = 100) -> dict:
-        return {"items": index_or_503().artists_sorted(sort, offset, min(limit, 5000))}
+    def library_artists(sort: str = "alpha", offset: int = 0, limit: int = 100, sp: Space = Depends(current_space)) -> dict:
+        return {"items": index_or_503(sp).artists_sorted(sort, offset, min(limit, 5000))}
 
     @app.get("/api/library/playlists")
-    def library_playlists() -> dict:
-        return {"items": index_or_503().playlists_list()}
+    def library_playlists(sp: Space = Depends(current_space)) -> dict:
+        return {"items": index_or_503(sp).playlists_list()}
 
     @app.get("/api/library/liked")
-    def library_liked() -> dict:
-        return {"tracks": [track_json(t) for t in index_or_503().liked_tracks()]}
+    def library_liked(sp: Space = Depends(current_space)) -> dict:
+        return {"tracks": [track_json(t) for t in index_or_503(sp).liked_tracks()]}
 
     @app.get("/api/library/recent")
-    def library_recent() -> dict:
-        return {"tracks": [track_json(t) for t in index_or_503().recent_tracks()]}
+    def library_recent(sp: Space = Depends(current_space)) -> dict:
+        return {"tracks": [track_json(t) for t in index_or_503(sp).recent_tracks()]}
 
     @app.get("/api/album/{album_id}")
-    def album_page(album_id: str) -> dict:
-        page = index_or_503().album_page(album_id)
+    def album_page(album_id: str, sp: Space = Depends(current_space)) -> dict:
+        page = index_or_503(sp).album_page(album_id)
         if page is None:
             raise HTTPException(404, "Альбом не найден")
         return page
 
     @app.get("/api/artist/{artist_id}")
-    def artist_page(artist_id: str) -> dict:
-        page = index_or_503().artist_page(artist_id)
+    def artist_page(artist_id: str, sp: Space = Depends(current_space)) -> dict:
+        page = index_or_503(sp).artist_page(artist_id)
         if page is None:
             raise HTTPException(404, "Артист не найден")
         return page
 
     @app.get("/api/playlist/{playlist_id}")
-    def playlist_page(playlist_id: str) -> dict:
-        page = index_or_503().playlist_page(playlist_id)
+    def playlist_page(playlist_id: str, sp: Space = Depends(current_space)) -> dict:
+        page = index_or_503(sp).playlist_page(playlist_id)
         if page is None:
             raise HTTPException(404, "Плейлист не найден")
         return page
 
     @app.get("/api/search")
-    def search(q: str = "") -> dict:
-        return index_or_503().search(q)
+    def search(q: str = "", sp: Space = Depends(current_space)) -> dict:
+        return index_or_503(sp).search(q)
 
     # --- что система знает о вкусе ---
 
     @app.get("/api/taste")
-    def taste_summary() -> dict:
+    def taste_summary(sp: Space = Depends(current_space)) -> dict:
         """«Ваш вкус»: кого дослушиваете, кого пропускаете, откуда треки заходят лучше."""
-        p = taste_or_503()
+        p = taste_or_503(sp)
         artists = []
         names = {t.artist.lower(): t.artist for t in p.track_info.values()}
         for name, stats in p.artist_stats.items():
@@ -835,7 +932,7 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
             if total >= 2:
                 artists.append({"artist": names.get(name, name), "completes": round(stats.completes, 1),
                                 "skips": round(stats.skips, 1), "rate": round(stats.completes / total, 2)})
-        events = rt.deps.store.events(since=time.time() - 90 * 86400)
+        events = sp.deps.store.events(since=time.time() - 90 * 86400)
         by_source: dict[str, Counter] = defaultdict(Counter)
         for e in events:
             if e.entity == "track" and e.kind in ("complete", "early_skip", "late_skip", "dislike"):
@@ -862,19 +959,19 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
     # --- медиа и веб-плеер ---
 
     @app.get("/api/lyrics/{track_id}")
-    def lyrics(track_id: str) -> dict:
-        index = rt.profiles.loaded_index()
+    def lyrics(track_id: str, sp: Space = Depends(current_space)) -> dict:
+        index = sp.profiles.loaded_index()
         track = index.songs.get(track_id) if index else None
         try:
-            return rt.deps.library.lyrics(track_id, track.artist if track else "", track.title if track else "")
+            return sp.deps.library.lyrics(track_id, track.artist if track else "", track.title if track else "")
         except Exception as exc:  # noqa: BLE001 — без текста плеер работает как обычно
             log.warning("Текст для %s не получен: %s", track_id, exc)
             return {"synced": False, "lines": []}
 
     @app.get("/api/stream/{track_id}")
-    def stream(track_id: str, request: Request):
-        bitrate = QUALITY.get(preferences()["quality"], 0)
-        media = rt.deps.library.stream(track_id, request.headers.get("range"), max_bitrate=bitrate)
+    def stream(track_id: str, request: Request, sp: Space = Depends(current_space)):
+        bitrate = QUALITY.get(sp.preferences()["quality"], 0)
+        media = sp.deps.library.stream(track_id, request.headers.get("range"), max_bitrate=bitrate)
         return StreamingResponse(
             iter(media.body),
             status_code=media.status,
@@ -884,8 +981,8 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         )
 
     @app.get("/api/cover/{cover_id}")
-    def cover(cover_id: str):
-        media = rt.deps.library.cover(cover_id)
+    def cover(cover_id: str, sp: Space = Depends(current_space)):
+        media = sp.deps.library.cover(cover_id)
         return StreamingResponse(iter(media.body), status_code=media.status, media_type=media.media_type, headers=media.headers)
 
     @app.get("/")

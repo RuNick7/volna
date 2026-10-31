@@ -174,3 +174,13 @@ def build_deps(server: ServerConfig | None, data_dir: Path) -> Deps:
         else NoSimilarity()
     )
     return Deps(library=library, sim=sim, store=store, vectors=Vectors(sim, store))
+
+
+def user_deps(server: ServerConfig, shared: Deps, data_dir: Path) -> Deps:
+    """Ещё один пользователь того же Navidrome: свой клиент (лайки, прослушивания, скробблы идут
+    от его имени) и своя история волны. AudioMuse и кэш звучания общие — звучание трека у всех одно."""
+    from .navidrome import Navidrome
+
+    store = Store(data_dir / f"server-{server.key}.db")
+    library = Navidrome(server.navidrome_url, server.navidrome_user, server.navidrome_password, store)
+    return Deps(library=library, sim=shared.sim, store=store, vectors=shared.vectors, background_io=True)

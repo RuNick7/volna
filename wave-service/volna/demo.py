@@ -19,7 +19,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from .models import Candidate, Media, Track
+from .models import Candidate, Entity, LibrarySnapshot, Media, Playlist, Track
 from .vectors import unit
 
 DAY = 86400.0
@@ -35,6 +35,17 @@ GENRE_SOUND = [
     (59, 96, 0.05),
     (40, 150, 0.14),
     (48, 70, 0.03),
+]
+# Настроения жанров в шкалах AudioMuse (other_features) плюс тег instrumental из MusiCNN
+GENRE_TRAITS = [
+    dict(relaxed=0.45, sad=0.55, happy=0.3, aggressive=0.35, danceable=0.2, party=0.1, instrumental=0.85),
+    dict(relaxed=0.3, sad=0.25, happy=0.6, aggressive=0.3, danceable=0.75, party=0.65, instrumental=0.6),
+    dict(relaxed=0.75, sad=0.3, happy=0.55, aggressive=0.1, danceable=0.35, party=0.2, instrumental=0.7),
+    dict(relaxed=0.9, sad=0.45, happy=0.35, aggressive=0.05, danceable=0.3, party=0.1, instrumental=0.9),
+    dict(relaxed=0.1, sad=0.15, happy=0.4, aggressive=0.5, danceable=0.9, party=0.85, instrumental=0.9),
+    dict(relaxed=0.6, sad=0.5, happy=0.5, aggressive=0.1, danceable=0.3, party=0.15, instrumental=0.1),
+    dict(relaxed=0.05, sad=0.3, happy=0.2, aggressive=0.95, danceable=0.3, party=0.3, instrumental=0.15),
+    dict(relaxed=0.85, sad=0.6, happy=0.3, aggressive=0.05, danceable=0.05, party=0.02, instrumental=1.0),
 ]
 KEYS = ["C", "G", "D", "A", "E", "B", "F#", "C#", "G#", "D#", "A#", "F"]
 TITLE_A = ["Северный", "Тихий", "Стеклянный", "Ночной", "Белый", "Далёкий", "Медленный", "Лунный", "Пустой", "Тёплый", "Глубокий", "Последний"]
@@ -58,6 +69,9 @@ class DemoWorld:
         self.genre: dict[str, int] = {}  # -1 у «мостов» между двумя жанрами
         self.sound: dict[str, tuple[int, float]] = {}
         self.features_map: dict[str, dict] = {}
+        self.albums: dict[str, Entity] = {}
+        self.artists: dict[str, Entity] = {}
+        self.playlists: list[Playlist] = []
 
         offset = np.abs(rng.normal(0, 1, dim)) * 2.0
         centers = rng.normal(0, 1, (len(GENRES), dim))
@@ -71,6 +85,11 @@ class DemoWorld:
             artist_center = base + 0.6 * rng.normal(0, 1, dim)
             album = f"{rng.choice(TITLE_A)} {rng.choice(TITLE_B)}"
             root, tempo, energy = GENRE_SOUND[g]
+            traits = GENRE_TRAITS[g] if bridge is None else {
+                k: (v + GENRE_TRAITS[bridge][k]) / 2 for k, v in GENRE_TRAITS[g].items()
+            }
+            self.albums[f"demo-album-{idx}"] = Entity(f"demo-album-{idx}", album, artist=names[idx])
+            self.artists[f"demo-artist-{idx}"] = Entity(f"demo-artist-{idx}", names[idx])
             for t in range(tracks_per_artist if bridge is None else 8):
                 tid = f"demo-{idx:02d}-{t:02d}"
                 self.tracks[tid] = Track(
@@ -91,8 +110,8 @@ class DemoWorld:
                     "energy": float(energy * (1 + 0.2 * rng.normal())),
                     "key": KEYS[int(rng.integers(12))],
                     "scale": str(rng.choice(["major", "minor"])),
-                    "moods": {},
-                    "other": {},
+                    "moods": {"instrumental": _jitter(rng, traits["instrumental"])},
+                    "other": {k: _jitter(rng, v) for k, v in traits.items() if k != "instrumental"},
                 }
 
         self.ids = list(self.tracks)
@@ -106,7 +125,7 @@ class DemoWorld:
 
         def pick(genre: int, n: int) -> list[str]:
             pool = [i for i in self.ids if self.genre[i] == genre]
-            return list(rng.choice(pool, size=n, replace=False))
+            return [str(i) for i in rng.choice(pool, size=n, replace=False)]
 
         for g in LIKED_GENRES:
             for tid in pick(g, 8):
@@ -120,6 +139,19 @@ class DemoWorld:
         for tid in pick(DISLIKED_GENRE, 3):
             self.tracks[tid].rating = 1
 
+        # Отметки целых альбомов и артистов, плейлисты пользователя
+        def artist_of_genre(genre: int, n: int = 0) -> str:
+            return sorted({self.tracks[i].artist_id for i in self.ids if self.genre[i] == genre})[n]
+
+        self.albums[artist_of_genre(0).replace("artist", "album")].starred = True
+        self.albums[artist_of_genre(3, 1).replace("artist", "album")].rating = 5
+        self.artists[artist_of_genre(1, 2)].starred = True
+        self.artists[artist_of_genre(DISLIKED_GENRE, 0)].rating = 1
+        self.playlists = [
+            Playlist("demo-pl-evening", "Вечер", pick(3, 10) + pick(7, 8), changed=now - 20 * DAY),
+            Playlist("demo-pl-road", "Дорога", pick(1, 10) + pick(4, 6), changed=now - 60 * DAY),
+        ]
+
     def genre_name(self, track_id: str) -> str:
         g = self.genre.get(track_id, -1)
         return GENRES[g] if g >= 0 else "кроссовер"
@@ -129,11 +161,14 @@ class DemoWorld:
     def ping(self) -> bool:
         return True
 
-    def starred_songs(self) -> list[Track]:
-        return [replace(t) for t in self.tracks.values() if t.starred]
-
-    def frequent_songs(self, albums: int = 30) -> list[Track]:
-        return [replace(t) for t in self.tracks.values() if t.play_count > 0]
+    def sync(self) -> LibrarySnapshot:
+        return LibrarySnapshot(
+            songs=[replace(t) for t in self.tracks.values()],
+            albums=[replace(a) for a in self.albums.values()],
+            artists=[replace(a) for a in self.artists.values()],
+            playlists=[replace(p, track_ids=list(p.track_ids)) for p in self.playlists],
+            synced_at=time.time(),
+        )
 
     def random_songs(self, n: int = 50) -> list[Track]:
         ids = self._rng.choice(self.ids, size=min(n, len(self.ids)), replace=False)
@@ -147,14 +182,17 @@ class DemoWorld:
             self.tracks[track_id].play_count += 1
             self.tracks[track_id].last_played = time_ms / 1000 if time_ms else time.time()
 
-    def star(self, track_id: str) -> None:
-        self.tracks[track_id].starred = True
+    def _item(self, item_id: str):
+        return self.tracks.get(item_id) or self.albums.get(item_id) or self.artists.get(item_id)
 
-    def unstar(self, track_id: str) -> None:
-        self.tracks[track_id].starred = False
+    def star(self, item_id: str, entity: str = "track") -> None:
+        self._item(item_id).starred = True
 
-    def set_rating(self, track_id: str, rating: int) -> None:
-        self.tracks[track_id].rating = rating
+    def unstar(self, item_id: str, entity: str = "track") -> None:
+        self._item(item_id).starred = False
+
+    def set_rating(self, item_id: str, rating: int) -> None:
+        self._item(item_id).rating = rating
 
     def stream(self, track_id: str, range_header: str | None = None) -> Media:
         if track_id not in self.tracks:
@@ -249,6 +287,10 @@ class DemoWorld:
             p = np.exp((scores - scores.max()) / temperature)
             chosen = list(self._rng.choice(js, size=k, replace=False, p=p / p.sum()))
         return [self._candidate(j) for j in chosen]
+
+
+def _jitter(rng: np.random.Generator, value: float) -> float:
+    return float(np.clip(value + rng.normal(0, 0.08), 0.0, 1.0))
 
 
 def synth_track(track_id: str, duration: float, root: int, tempo: float, sr: int = 22050) -> bytes:

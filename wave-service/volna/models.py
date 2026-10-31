@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Callable, Iterable
 
 
@@ -28,12 +28,44 @@ class Track:
 
 
 @dataclass
+class Entity:
+    """Альбом или артист вместе с отметками пользователя."""
+
+    id: str
+    name: str
+    artist: str = ""
+    starred: bool = False
+    rating: int = 0
+    play_count: int = 0
+
+
+@dataclass
+class Playlist:
+    id: str
+    name: str
+    track_ids: list[str] = field(default_factory=list)
+    changed: float | None = None  # unix time последнего изменения
+
+
+@dataclass
+class LibrarySnapshot:
+    """Вся библиотека с отметками пользователя: из неё строится профиль вкуса."""
+
+    songs: list[Track]
+    albums: list[Entity]
+    artists: list[Entity]
+    playlists: list[Playlist]
+    synced_at: float
+
+
+@dataclass
 class Candidate:
     """Строка выдачи похожих треков: только то, что отдаёт AudioMuse."""
 
     id: str
     title: str = ""
     artist: str = ""
+    source: str = "audiomuse"  # откуда кандидат: audiomuse | similar | favorites | random
 
 
 @dataclass

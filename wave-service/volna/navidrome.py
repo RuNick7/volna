@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import httpx
 
-from .models import Media, Track
+from .models import Entity, LibrarySnapshot, Media, Playlist, Track
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -49,8 +50,20 @@ def parse_song(s: dict) -> Track:
     )
 
 
+def parse_entity(d: dict) -> Entity:
+    return Entity(
+        id=str(d["id"]),
+        name=d.get("name") or d.get("title") or "",
+        artist=d.get("artist", ""),
+        starred=bool(d.get("starred")),
+        rating=int(d.get("userRating") or 0),
+        play_count=int(d.get("playCount") or 0),
+    )
+
+
 class Navidrome:
     API_VERSION = "1.16.1"
+    PAGE = 500
 
     def __init__(self, url: str, user: str, password: str, store: Store, timeout: float = 15.0):
         self.base = url.rstrip("/")
@@ -79,6 +92,74 @@ class Navidrome:
         return True
 
     # --- история и вкус ---
+
+    def sync(self) -> LibrarySnapshot:
+        """Вся библиотека с прослушиваниями, звёздами и оценками: песни, альбомы, артисты, плейлисты."""
+        started = time.time()
+        songs = self._all_songs()
+        snapshot = LibrarySnapshot(
+            songs=songs,
+            albums=self._all_albums(),
+            artists=self._all_artists(),
+            playlists=self._own_playlists(),
+            synced_at=time.time(),
+        )
+        log.info(
+            "Библиотека синхронизирована за %.1f с: %d треков, %d альбомов, %d артистов, %d плейлистов",
+            time.time() - started, len(songs), len(snapshot.albums), len(snapshot.artists), len(snapshot.playlists),
+        )
+        return snapshot
+
+    def _all_songs(self) -> list[Track]:
+        songs: list[Track] = []
+        offset = 0
+        while True:
+            body = self.call("search3", query="", songCount=self.PAGE, songOffset=offset, artistCount=0, albumCount=0)
+            chunk = body.get("searchResult3", {}).get("song", [])
+            songs += [parse_song(s) for s in chunk]
+            if len(chunk) < self.PAGE:
+                break
+            offset += self.PAGE
+        if not songs:
+            # старые сервера не отдают всё по пустому запросу: берём хотя бы историю и звёзды
+            log.warning("search3 с пустым запросом ничего не вернул, беру частые альбомы и звёзды")
+            merged = {t.id: t for t in self.frequent_songs(albums=100) + self.starred_songs()}
+            songs = list(merged.values())
+        return self._remember(songs)
+
+    def _all_albums(self) -> list[Entity]:
+        albums: list[Entity] = []
+        offset = 0
+        while True:
+            body = self.call("getAlbumList2", type="alphabeticalByName", size=self.PAGE, offset=offset)
+            chunk = body.get("albumList2", {}).get("album", [])
+            albums += [parse_entity(a) for a in chunk]
+            if len(chunk) < self.PAGE:
+                return albums
+            offset += self.PAGE
+
+    def _all_artists(self) -> list[Entity]:
+        index = self.call("getArtists").get("artists", {}).get("index", [])
+        return [parse_entity(a) for group in index for a in group.get("artist", [])]
+
+    def _own_playlists(self, limit: int = 100) -> list[Playlist]:
+        listed = self.call("getPlaylists").get("playlists", {}).get("playlist", [])
+        own = [p for p in listed if p.get("owner") in (None, self.user)][:limit]
+
+        def load(p: dict) -> Playlist | None:
+            try:
+                body = self.call("getPlaylist", id=p["id"]).get("playlist", {})
+            except (httpx.HTTPError, SubsonicError):
+                log.warning("Не удалось загрузить плейлист %s", p.get("name"), exc_info=True)
+                return None
+            return Playlist(
+                id=str(p["id"]),
+                name=p.get("name", ""),
+                track_ids=[str(s["id"]) for s in body.get("entry", [])],
+                changed=_iso_ts(p.get("changed")),
+            )
+
+        return [p for p in self.pool.map(load, own) if p is not None]
 
     def starred_songs(self) -> list[Track]:
         songs = self.call("getStarred2").get("starred2", {}).get("song", [])
@@ -133,11 +214,13 @@ class Navidrome:
     def scrobble(self, track_id: str, submission: bool, time_ms: int | None = None) -> None:
         self.call("scrobble", id=track_id, submission=str(submission).lower(), time=time_ms)
 
-    def star(self, track_id: str) -> None:
-        self.call("star", id=track_id)
+    STAR_PARAM = {"track": "id", "album": "albumId", "artist": "artistId"}
 
-    def unstar(self, track_id: str) -> None:
-        self.call("unstar", id=track_id)
+    def star(self, item_id: str, entity: str = "track") -> None:
+        self.call("star", **{self.STAR_PARAM[entity]: item_id})
+
+    def unstar(self, item_id: str, entity: str = "track") -> None:
+        self.call("unstar", **{self.STAR_PARAM[entity]: item_id})
 
     def set_rating(self, track_id: str, rating: int) -> None:
         self.call("setRating", id=track_id, rating=rating)

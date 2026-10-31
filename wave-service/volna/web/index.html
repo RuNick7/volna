@@ -14,7 +14,16 @@
   <div class="app">
     <header class="top">
       <span class="brand">volna</span>
-      <span class="status" id="status" role="status"></span>
+      <span class="top__right">
+        <span class="status" id="status" role="status"></span>
+        <button class="icon-btn" id="open-settings" type="button" aria-label="Настроить волну" title="Настроить волну">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h10M18 7h2M4 17h4M12 17h8"/>
+            <circle cx="16" cy="7" r="2"/>
+            <circle cx="10" cy="17" r="2"/>
+          </svg>
+        </button>
+      </span>
     </header>
 
     <main class="stage">
@@ -58,14 +67,115 @@
     </main>
 
     <footer class="bottom">
-      <div class="modes" id="modes" role="radiogroup" aria-label="Характер волны">
-        <button type="button" role="radio" data-mode="favorite" aria-checked="false">Любимое</button>
-        <button type="button" role="radio" data-mode="balanced" aria-checked="true">Баланс</button>
-        <button type="button" role="radio" data-mode="discover" aria-checked="false">Незнакомое</button>
-      </div>
+      <button class="tune-pill" id="tune-pill" type="button" aria-label="Настроить волну">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h10M18 7h2M4 17h4M12 17h8"/>
+          <circle cx="16" cy="7" r="2"/>
+          <circle cx="10" cy="17" r="2"/>
+        </svg>
+        <span id="tune-summary">Баланс</span>
+      </button>
       <div class="next" id="next"></div>
     </footer>
   </div>
+
+  <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+  <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+    <header class="sheet__head">
+      <h2 id="sheet-title">Настроить волну</h2>
+      <button class="icon-btn" id="close-settings" type="button" aria-label="Закрыть">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+
+    <div class="group">
+      <div class="group__label">Характер</div>
+      <div class="segmented" data-setting="character">
+        <button type="button" data-value="favorite">Любимое</button>
+        <button type="button" data-value="balanced">Баланс</button>
+        <button type="button" data-value="discover">Незнакомое</button>
+        <button type="button" data-value="forgotten">Забытое</button>
+      </div>
+      <p class="hint" id="character-hint"></p>
+    </div>
+
+    <div class="group">
+      <div class="group__label">Настроение</div>
+      <div class="chips" data-setting="mood">
+        <button type="button" data-value="any">Любое</button>
+        <button type="button" data-value="energetic">Бодрое</button>
+        <button type="button" data-value="happy">Весёлое</button>
+        <button type="button" data-value="calm">Спокойное</button>
+        <button type="button" data-value="sad">Грустное</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group__label">Занятие</div>
+      <div class="chips" data-setting="activity">
+        <button type="button" data-value="any">Любое</button>
+        <button type="button" data-value="wake">Просыпаюсь</button>
+        <button type="button" data-value="commute">В дороге</button>
+        <button type="button" data-value="work">Работаю</button>
+        <button type="button" data-value="workout">Тренируюсь</button>
+        <button type="button" data-value="sleep">Засыпаю</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="row">
+        <span>Без слов</span>
+        <button class="switch" type="button" role="switch" data-setting="no_vocals" aria-checked="false" aria-label="Без слов"></button>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group__label">Тонкая настройка</div>
+
+      <label class="slider">
+        <span class="slider__head"><span>Смелость подбора</span><output id="temperature-value"></output></span>
+        <input type="range" min="0.1" max="1.5" step="0.05" data-setting="temperature" aria-describedby="temperature-scale">
+        <span class="slider__scale" id="temperature-scale"><span>предсказуемо</span><span>смело</span></span>
+      </label>
+
+      <label class="slider">
+        <span class="slider__head"><span>Разнообразие</span><output id="diversity-value"></output></span>
+        <input type="range" min="0" max="1" step="0.05" data-setting="diversity" aria-describedby="diversity-scale">
+        <span class="slider__scale" id="diversity-scale"><span>одно звучание</span><span>всё разное</span></span>
+      </label>
+
+      <label class="slider">
+        <span class="slider__head"><span>Не повторять треки</span><output id="repeat-value"></output></span>
+        <input type="range" min="0" max="60" step="1" data-setting="repeat_days">
+        <span class="slider__scale"><span>можно сразу</span><span>2 месяца</span></span>
+      </label>
+
+      <div class="row">
+        <span>Учитывать время суток и выходные</span>
+        <button class="switch" type="button" role="switch" data-setting="context_aware" aria-checked="true" aria-label="Учитывать время суток и выходные"></button>
+      </div>
+
+      <button class="link-btn" id="reset-auto" type="button">Вернуть значения характера</button>
+    </div>
+
+    <button class="wide-btn" id="shake" type="button">Встряхнуть волну</button>
+
+    <div class="group taste" id="taste">
+      <div class="group__label">Ваш вкус</div>
+      <p class="hint" id="taste-signals">Загружаю…</p>
+      <div class="taste__cols">
+        <div>
+          <div class="taste__title">Дослушиваете</div>
+          <ol class="taste__list" id="taste-loved"></ol>
+        </div>
+        <div>
+          <div class="taste__title">Чаще пропускаете</div>
+          <ol class="taste__list" id="taste-skipped"></ol>
+        </div>
+      </div>
+      <p class="hint" id="taste-sources"></p>
+    </div>
+  </section>
 
   <audio id="audio" preload="auto"></audio>
   <script src="/topo.js"></script>

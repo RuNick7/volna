@@ -31,7 +31,14 @@ CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS embeddings (id TEXT PRIMARY KEY, vec BLOB, fetched_at REAL);
 CREATE TABLE IF NOT EXISTS features (id TEXT PRIMARY KEY, data TEXT, fetched_at REAL);
 CREATE TABLE IF NOT EXISTS tracks (id TEXT PRIMARY KEY, data TEXT, fetched_at REAL);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 """
+
+# Колонки, добавленные после первой версии базы: докатываются через ALTER TABLE
+EVENT_EXTRA_COLUMNS = ("album_id", "artist_id", "context_type", "context_id", "device", "entity")
+EVENT_COLUMNS = (
+    "ts", "track_id", "kind", "artist", "session", "position", "duration", "mode", "source", "cluster",
+) + EVENT_EXTRA_COLUMNS
 
 CHUNK = 500
 
@@ -39,15 +46,21 @@ CHUNK = 500
 @dataclass
 class Event:
     ts: float
-    track_id: str
+    track_id: str  # id трека, а для лайков альбома или артиста — их id (см. entity)
     kind: str  # complete | late_skip | early_skip | dislike | like | unlike
     artist: str = ""
     session: str = ""
     position: float = 0.0
     duration: float = 0.0
-    mode: str = ""
-    source: str = ""
+    mode: str = ""  # характер волны
+    source: str = ""  # откуда взялся трек: audiomuse | favorites | similar | random | manual
     cluster: int | None = None
+    album_id: str = ""
+    artist_id: str = ""
+    context_type: str = ""  # где играл: wave | continue | album | playlist | artist | search | library
+    context_id: str = ""
+    device: str = ""
+    entity: str = "track"  # track | album | artist
 
 
 class Store:
@@ -58,6 +71,11 @@ class Store:
         self._lock = threading.Lock()
         with self._lock:
             self._db.executescript(SCHEMA)
+            existing = {row[1] for row in self._db.execute("PRAGMA table_info(events)")}
+            for column in EVENT_EXTRA_COLUMNS:
+                if column not in existing:
+                    self._db.execute(f"ALTER TABLE events ADD COLUMN {column} TEXT")
+            self._db.commit()
         self._vec_cache: dict[str, np.ndarray] = {}
 
     def _rows(self, sql: str, ids: list[str]) -> list[tuple]:
@@ -79,24 +97,39 @@ class Store:
     # --- события ---
 
     def add_event(self, e: Event) -> None:
+        columns = ", ".join(EVENT_COLUMNS)
+        marks = ", ".join("?" * len(EVENT_COLUMNS))
         self._write(
-            "INSERT INTO events (ts, session, track_id, artist, kind, position, duration, mode, source, cluster)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(e.ts, e.session, e.track_id, e.artist, e.kind, e.position, e.duration, e.mode, e.source, e.cluster)],
+            f"INSERT INTO events ({columns}) VALUES ({marks})",
+            [tuple(getattr(e, c) for c in EVENT_COLUMNS)],
         )
 
     def events(self, since: float = 0.0) -> list[Event]:
         with self._lock:
             rows = self._db.execute(
-                "SELECT ts, track_id, kind, artist, session, position, duration, mode, source, cluster"
-                " FROM events WHERE ts >= ? ORDER BY ts",
-                (since,),
+                f"SELECT {', '.join(EVENT_COLUMNS)} FROM events WHERE ts >= ? ORDER BY ts", (since,)
             ).fetchall()
-        return [Event(*row) for row in rows]
+        return [
+            Event(**{c: v for c, v in zip(EVENT_COLUMNS, row) if v is not None or c == "cluster"})
+            for row in rows
+        ]
 
     def count_events(self) -> int:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+
+    # --- настройки ---
+
+    def setting(self, key: str, default=None):
+        with self._lock:
+            row = self._db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return json.loads(row[0]) if row else default
+
+    def put_setting(self, key: str, value) -> None:
+        self._write(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            [(key, json.dumps(value, ensure_ascii=False))],
+        )
 
     # --- эмбеддинги ---
 

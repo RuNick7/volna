@@ -9,31 +9,43 @@
   const ui = {
     wave: $("wave"), icon: $("icon"), cover: $("cover"), title: $("title"), sub: $("sub"),
     reason: $("reason"), progress: $("progress"), bar: $("bar"), controls: $("controls"),
-    like: $("like"), dislike: $("dislike"), skip: $("skip"), modes: $("modes"),
-    next: $("next"), status: $("status"),
+    like: $("like"), dislike: $("dislike"), skip: $("skip"), next: $("next"), status: $("status"),
+    sheet: $("sheet"), backdrop: $("sheet-backdrop"), summary: $("tune-summary"),
   };
   const ICON_PLAY = "M8 5.5v13l10.5-6.5z";
   const ICON_PAUSE = "M8 5h3v14H8zM13 5h3v14h-3z";
+
+  const LABELS = {
+    character: { favorite: "Любимое", balanced: "Баланс", discover: "Незнакомое", forgotten: "Забытое" },
+    mood: { any: "", energetic: "Бодрое", happy: "Весёлое", calm: "Спокойное", sad: "Грустное" },
+    activity: { any: "", wake: "Просыпаюсь", commute: "В дороге", work: "Работаю", workout: "Тренируюсь", sleep: "Засыпаю" },
+  };
+  const CHARACTER_HINTS = {
+    favorite: "Больше того, что вы уже любите и часто дослушиваете.",
+    balanced: "Любимое вперемешку с новым, похожим на ваш вкус.",
+    discover: "В основном треки, которые вы ещё не слышали.",
+    forgotten: "Отмеченное и любимое, что давно не звучало.",
+  };
+  // значения характера по умолчанию: показываем, когда ползунок «авто»
+  const CHARACTER_DEFAULTS = {
+    favorite: { temperature: 0.35, repeat_days: 2 },
+    balanced: { temperature: 0.6, repeat_days: 3 },
+    discover: { temperature: 1.0, repeat_days: 30 },
+    forgotten: { temperature: 0.5, repeat_days: 60 },
+  };
 
   const state = {
     session: null,
     track: null,
     upcoming: [],
-    mode: readMode(),
+    settings: { character: "balanced", mood: "any", activity: "any", no_vocals: false,
+      temperature: null, diversity: 0.5, repeat_days: null, context_aware: true },
     busy: false,
   };
 
-  function readMode() {
-    try { return localStorage.getItem("volna.mode") || "balanced"; } catch { return "balanced"; }
-  }
-
-  function saveMode(mode) {
-    try { localStorage.setItem("volna.mode", mode); } catch { /* приватный режим */ }
-  }
-
-  async function api(path, body) {
+  async function api(path, body, method) {
     const res = await fetch(path, {
-      method: body === undefined ? "GET" : "POST",
+      method: method || (body === undefined ? "GET" : "POST"),
       headers: body === undefined ? {} : { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -52,7 +64,7 @@
   async function startWave() {
     setLoading(true);
     try {
-      apply(await api("/api/wave/start", { mode: state.mode }));
+      apply(await api("/api/wave/start", { device: "web" }));
       await play();
     } catch (error) {
       showError(error);
@@ -90,6 +102,7 @@
   function apply(data) {
     state.session = data.session;
     state.upcoming = data.upcoming || [];
+    if (data.settings) setSettings(data.settings);
     if (!state.track || !data.track || state.track.id !== data.track.id) setTrack(data.track);
     else renderTrack(data.track);
     renderNext();
@@ -193,28 +206,19 @@
     }
   }
 
-  ui.modes.addEventListener("click", async (event) => {
-    const button = event.target.closest("button[data-mode]");
-    if (!button || button.dataset.mode === state.mode) return;
-    state.mode = button.dataset.mode;
-    saveMode(state.mode);
-    renderModes();
-    if (!state.session) return;
+  async function shake() {
+    if (!state.session) return startWave();
     try {
-      apply(await api(`/api/wave/${state.session}/mode`, { mode: state.mode }));
+      apply(await api(`/api/wave/${state.session}/shake`, {}));
+      showNotice("Волна встряхнута: дальше будет иначе");
     } catch (error) {
       showError(error);
-    }
-  });
-
-  function renderModes() {
-    for (const button of ui.modes.querySelectorAll("button[data-mode]")) {
-      button.setAttribute("aria-checked", String(button.dataset.mode === state.mode));
     }
   }
 
   document.addEventListener("keydown", (event) => {
-    if (event.target.closest?.("input, textarea") || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === "Escape" && !ui.sheet.hidden) return closeSheet();
+    if (!ui.sheet.hidden || event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.code === "Space") {
       event.preventDefault();
       ui.wave.click();
@@ -224,6 +228,8 @@
       toggleLike();
     } else if (event.code === "KeyD") {
       advance("dislike");
+    } else if (event.code === "KeyS") {
+      shake();
     }
   });
 
@@ -231,6 +237,165 @@
     navigator.mediaSession.setActionHandler("play", () => play());
     navigator.mediaSession.setActionHandler("pause", () => audio.pause());
     navigator.mediaSession.setActionHandler("nexttrack", () => advance("skip"));
+  }
+
+  // --- настройки волны ---
+
+  let lastFocus = null;
+
+  function openSheet() {
+    lastFocus = document.activeElement;
+    ui.sheet.hidden = false;
+    ui.backdrop.hidden = false;
+    $("close-settings").focus();
+    loadTaste();
+  }
+
+  function closeSheet() {
+    ui.sheet.hidden = true;
+    ui.backdrop.hidden = true;
+    lastFocus?.focus();
+  }
+
+  $("open-settings").addEventListener("click", openSheet);
+  $("tune-pill").addEventListener("click", openSheet);
+  $("close-settings").addEventListener("click", closeSheet);
+  ui.backdrop.addEventListener("click", closeSheet);
+  $("shake").addEventListener("click", () => { closeSheet(); shake(); });
+  $("reset-auto").addEventListener("click", () => changeSettings({ temperature: null, repeat_days: null, diversity: 0.5 }));
+
+  for (const group of ui.sheet.querySelectorAll(".segmented, .chips")) {
+    group.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-value]");
+      if (button) changeSettings({ [group.dataset.setting]: button.dataset.value });
+    });
+  }
+  for (const toggle of ui.sheet.querySelectorAll(".switch")) {
+    toggle.addEventListener("click", () => {
+      changeSettings({ [toggle.dataset.setting]: toggle.getAttribute("aria-checked") !== "true" });
+    });
+  }
+  for (const range of ui.sheet.querySelectorAll('input[type="range"]')) {
+    range.addEventListener("input", () => {
+      state.settings[range.dataset.setting] = Number(range.value);
+      renderSettings();
+      changeSettingsLater({ [range.dataset.setting]: Number(range.value) });
+    });
+  }
+
+  let pending = {};
+  let pendingTimer = null;
+
+  function changeSettingsLater(patch) {
+    pending = { ...pending, ...patch };
+    clearTimeout(pendingTimer);
+    pendingTimer = setTimeout(() => {
+      const patchToSend = pending;
+      pending = {};
+      changeSettings(patchToSend);
+    }, 300);
+  }
+
+  async function changeSettings(patch) {
+    setSettings({ ...state.settings, ...patch });
+    try {
+      if (state.session) {
+        apply(await api(`/api/wave/${state.session}/settings`, patch));
+      } else {
+        setSettings((await api("/api/settings", patch, "PUT")).settings);
+      }
+    } catch (error) {
+      if (error.status === 404) {
+        state.session = null;
+        setSettings((await api("/api/settings", patch, "PUT")).settings);
+      } else {
+        showError(error);
+      }
+    }
+  }
+
+  function setSettings(settings) {
+    state.settings = settings;
+    renderSettings();
+  }
+
+  function renderSettings() {
+    const s = state.settings;
+    const defaults = CHARACTER_DEFAULTS[s.character] || CHARACTER_DEFAULTS.balanced;
+    for (const group of ui.sheet.querySelectorAll(".segmented, .chips")) {
+      for (const button of group.querySelectorAll("button[data-value]")) {
+        button.setAttribute("aria-pressed", String(s[group.dataset.setting] === button.dataset.value));
+      }
+    }
+    for (const toggle of ui.sheet.querySelectorAll(".switch")) {
+      toggle.setAttribute("aria-checked", String(Boolean(s[toggle.dataset.setting])));
+    }
+    const temperature = s.temperature ?? defaults.temperature;
+    const repeat = s.repeat_days ?? defaults.repeat_days;
+    setRange("temperature", temperature);
+    setRange("diversity", s.diversity);
+    setRange("repeat_days", repeat);
+    $("temperature-value").textContent = `${temperature.toFixed(2)}${s.temperature == null ? " · авто" : ""}`;
+    $("diversity-value").textContent = `${Math.round(s.diversity * 100)}%`;
+    $("repeat-value").textContent = `${repeat === 0 ? "можно сразу" : `${Math.round(repeat)} дн.`}${s.repeat_days == null ? " · авто" : ""}`;
+    $("character-hint").textContent = CHARACTER_HINTS[s.character] || "";
+
+    const parts = [LABELS.character[s.character], LABELS.mood[s.mood], LABELS.activity[s.activity]];
+    if (s.no_vocals) parts.push("Без слов");
+    ui.summary.textContent = parts.filter(Boolean).join(" · ");
+  }
+
+  function setRange(name, value) {
+    const input = ui.sheet.querySelector(`input[data-setting="${name}"]`);
+    if (document.activeElement !== input) input.value = String(value);
+  }
+
+  async function loadTaste() {
+    try {
+      const taste = await api("/api/taste");
+      const s = taste.signals || {};
+      const count = (n, forms) => `${n ?? 0} ${plural(n ?? 0, forms)}`;
+      const TRACKS = ["трек", "трека", "треков"];
+      $("taste-signals").textContent =
+        `Учтено: ${count(s.played_tracks, TRACKS)} с прослушиваниями, ★ у ${count(s.starred_tracks, ["трека", "треков", "треков"])}, ` +
+        `${count(s.starred_albums, ["альбома", "альбомов", "альбомов"])} и ` +
+        `${count(s.starred_artists, ["артиста", "артистов", "артистов"])}, ` +
+        `${count(s.playlists, ["плейлист", "плейлиста", "плейлистов"])} и ` +
+        `${count(s.events, ["реакция", "реакции", "реакций"])} в Volna.`;
+      fillList($("taste-loved"), taste.loved_artists, (a) => `${a.artist} · ${Math.round(a.rate * 100)}%`);
+      fillList($("taste-skipped"), taste.skipped_artists, (a) => `${a.artist} · ${Math.round(a.skips)} проп.`);
+      const sources = Object.entries(taste.sources || {})
+        .map(([name, v]) => `${SOURCE_NAMES[name] || name}: ${Math.round(v.rate * 100)}% дослушано`);
+      $("taste-sources").textContent = sources.length ? `Откуда треки заходят лучше — ${sources.join(", ")}.` : "";
+    } catch (error) {
+      $("taste-signals").textContent = `Не удалось загрузить: ${error.message}`;
+    }
+  }
+
+  function plural(n, [one, few, many]) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+    return many;
+  }
+
+  const SOURCE_NAMES = {
+    audiomuse: "похожие по звучанию", favorites: "из любимого", similar: "похожие на трек",
+    random: "случайные", manual: "вне волны",
+  };
+
+  function fillList(list, items, format) {
+    list.replaceChildren(...(items || []).slice(0, 6).map((item) => {
+      const li = document.createElement("li");
+      li.textContent = format(item);
+      return li;
+    }));
+    if (!list.children.length) {
+      const li = document.createElement("li");
+      li.textContent = "пока мало данных";
+      list.append(li);
+    }
   }
 
   // --- громкость для фона и пульса кнопки ---
@@ -281,9 +446,13 @@
 
   let statusTimer = null;
   function showError(error) {
-    ui.status.textContent = error.message || "Что-то пошло не так";
+    showNotice(error.message || "Что-то пошло не так");
+  }
+
+  function showNotice(text) {
+    ui.status.textContent = text;
     clearTimeout(statusTimer);
-    statusTimer = setTimeout(renderHealth, 5000);
+    statusTimer = setTimeout(renderHealth, 4000);
   }
 
   let health = null;
@@ -298,6 +467,6 @@
     }
   }
 
-  renderModes();
+  api("/api/settings").then((data) => setSettings(data.settings)).catch(() => renderSettings());
   renderHealth();
 })();

@@ -107,6 +107,36 @@ def continuation_drift(length: int = 40, seed: int = 3) -> dict:
     return {"volna": summary(ours), "last_song_radio": summary(naive)}
 
 
+def settings_effect(n: int = 25, seeds: int = 3) -> list[dict]:
+    """Как настройки волны меняют звучание и долю нового."""
+    from volna.settings import WaveSettings, track_traits
+
+    cases = [
+        ("Без настроек", WaveSettings()),
+        ("Настроение: спокойное", WaveSettings(mood="calm")),
+        ("Настроение: бодрое", WaveSettings(mood="energetic")),
+        ("Занятие: засыпаю", WaveSettings(activity="sleep")),
+        ("Без слов", WaveSettings(no_vocals=True)),
+        ("Характер: любимое", WaveSettings(character="favorite")),
+        ("Характер: незнакомое", WaveSettings(character="discover")),
+    ]
+    rows = []
+    for label, settings in cases:
+        energy, instrumental, new = [], [], []
+        for seed in range(seeds):
+            world, deps = make_deps()
+            session = WaveSession(deps, build_profile(deps), settings, seed=seed)
+            track = session.start()
+            for _ in range(n):
+                traits = track_traits(world.features_map[track.id])
+                energy.append(traits.get("energy", 0.5))
+                instrumental.append(traits.get("instrumental", 0.5))
+                new.append(not (track.play_count > 0 or track.starred))
+                track = session.advance(track.id, "complete", track.duration, track.duration)
+        rows.append({"label": label, "energy": np.mean(energy), "instrumental": np.mean(instrumental), "new": np.mean(new)})
+    return rows
+
+
 def main() -> None:
     print("1. Волна учится на пропусках (слушатель разлюбил джаз)\n")
     print(f"{'сессия':>6} {'дослушано':>10} {'доля джаза':>11} {'тот же жанр после скипа':>24}  что играло чаще всего")
@@ -122,6 +152,11 @@ def main() -> None:
     for name, label in (("volna", "Volna (якоря)"), ("last_song_radio", "Радио по последней")):
         s = drift[name]
         print(f"{label:<22}{s['in_playlist']:>20.0%}{s['balance']:>15.0%}{s['last_10_in_playlist']:>14.0%}")
+
+    print("\n3. Настройки волны (энергия и «инструментальность» по шкале 0–1)\n")
+    print(f"{'':<24}{'энергия':>9}{'без слов':>10}{'новое':>8}")
+    for row in settings_effect():
+        print(f"{row['label']:<24}{row['energy']:>9.2f}{row['instrumental']:>10.2f}{row['new']:>8.0%}")
 
 
 if __name__ == "__main__":

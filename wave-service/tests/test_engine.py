@@ -11,8 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from simulate import LISTENER, continuation_drift, listen, make_deps  # noqa: E402
 
 from volna.demo import DISLIKED_GENRE, LIKED_GENRES  # noqa: E402
-from volna.engine import WaveSession, classify  # noqa: E402
+from volna.engine import WaveSession, classify, register_playback  # noqa: E402
 from volna.profile import build_profile  # noqa: E402
+from volna.settings import WaveSettings, track_traits  # noqa: E402
 
 
 @pytest.fixture()
@@ -122,3 +123,81 @@ def test_continuation_keeps_whole_playlist_not_last_song():
     assert np.mean([r["volna"]["in_playlist"] for r in results]) >= 0.9
     assert ours >= 0.6
     assert ours > naive + 0.3
+
+
+# --- настройки и сигналы ---
+
+def _serve(settings, seeds=(0, 1), n=20, prepare=None):
+    """Прогоняет волну с настройками; возвращает (мир, профиль, сессия, выданные треки) последнего прогона и все id."""
+    served = []
+    for seed in seeds:
+        world, deps = make_deps()
+        if prepare:
+            prepare(world)
+        session = WaveSession(deps, build_profile(deps), settings, seed=seed)
+        track = session.start()
+        for _ in range(n):
+            served.append((world, track))
+            track = session.advance(track.id, "complete", track.duration, track.duration)
+    return served
+
+
+def _mean_trait(served, key):
+    return np.mean([track_traits(world.features_map[t.id]).get(key, 0.5) for world, t in served])
+
+
+def test_mood_and_activity_shift_the_sound():
+    calm = _mean_trait(_serve(WaveSettings(mood="calm")), "energy")
+    energetic = _mean_trait(_serve(WaveSettings(mood="energetic")), "energy")
+    workout = _mean_trait(_serve(WaveSettings(activity="workout")), "energy")
+    assert calm < energetic - 0.25
+    assert workout > calm + 0.25
+
+
+def test_no_vocals_prefers_instrumental():
+    base = _mean_trait(_serve(WaveSettings()), "instrumental")
+    assert _mean_trait(_serve(WaveSettings(no_vocals=True)), "instrumental") > base + 0.08
+
+
+def test_character_controls_novelty():
+    def new_share(character):
+        served = _serve(WaveSettings(character=character))
+        return np.mean([not (t.play_count > 0 or t.starred) for _, t in served])
+
+    assert new_share("discover") > new_share("favorite") + 0.3
+
+
+def test_artists_and_albums_rated_one_star_are_banned():
+    banned = {}
+
+    def prepare(world):
+        # любимые жанры: Synthwave (артист с 1★) и Пост-рок (альбом с 1★)
+        artist_id = next(world.tracks[i].artist_id for i in world.ids if world.genre[i] == 1)
+        album_id = next(world.tracks[i].album_id for i in world.ids if world.genre[i] == 0)
+        world.set_rating(artist_id, 1)
+        world.set_rating(album_id, 1)
+        banned.update(artist=artist_id, album=album_id)
+
+    served = _serve(WaveSettings(character="favorite"), n=30, prepare=prepare)
+    assert all(t.artist_id != banned["artist"] and t.album_id != banned["album"] for _, t in served)
+
+
+def test_album_artist_and_playlist_marks_feed_weights(world_deps):
+    world, deps = world_deps
+    profile = build_profile(deps)
+    starred_album = next(a.id for a in world.albums.values() if a.starred)
+    album_tracks = [i for i in world.ids if world.tracks[i].album_id == starred_album]
+    assert min(profile.track_weight.get(i, 0) for i in album_tracks) >= 1.0
+    assert all(profile.track_weight.get(i, 0) > 0 for p in world.playlists for i in p.track_ids)
+    starred_artist = next(a for a in world.artists.values() if a.starred)
+    assert profile.artist_affinity(starred_artist.name) > 0.2
+
+
+def test_skips_inside_an_album_lower_its_affinity(world_deps):
+    world, deps = world_deps
+    profile = build_profile(deps)
+    album_id = world.tracks[world.ids[0]].album_id
+    for track_id in [i for i in world.ids if world.tracks[i].album_id == album_id][:3]:
+        register_playback(deps, profile, track_id, "early_skip", position=4, duration=60,
+                          context_type="album", context_id=album_id)
+    assert build_profile(deps).album_affinity(album_id) < 0

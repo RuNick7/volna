@@ -1,13 +1,15 @@
 """«Моя волна»: бесконечный поток, который подстраивается под пропуски.
 
 Ключевые идеи:
-* Якоря не двигаются. Кандидаты всегда ищутся от медоидов кластеров вкуса (или
-  плейлиста), а не от последней песни, поэтому поток не «уплывает».
+* Якоря не двигаются. Кандидаты всегда ищутся от ядра кластеров вкуса (или плейлиста,
+  альбома, артиста), а не от последней песни, поэтому поток не «уплывает».
 * Пропуск — главный сигнал. Ранний пропуск ослабляет кластер на всю сессию,
   отталкивает вектор сессии и выкидывает из очереди похожие треки, а два пропуска
   подряд переключают волну на другой кластер.
 * Какой кластер играть дальше, решает Thompson sampling по статистике
-  «дослушал / пропустил» с учётом времени суток.
+  «дослушал / пропустил» с учётом времени суток и будней/выходных.
+* Настройки (характер, настроение, занятие, температура, разнообразие) превращаются
+  в Tuning и меняют подбор, не трогая накопленные знания о вкусе.
 """
 
 from __future__ import annotations
@@ -22,8 +24,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from .models import Candidate, Track
-from .profile import DAY, TasteProfile, time_bucket
+from .profile import BUCKETS, DAY, TasteProfile, time_bucket
 from .services import Deps
+from .settings import WaveSettings, match, track_traits, tune
 from .store import Event
 from .vectors import unit
 
@@ -32,28 +35,14 @@ log = logging.getLogger(__name__)
 EARLY_SKIP_SECONDS = 30.0
 EARLY_SKIP_FRACTION = 0.25
 COMPLETE_FRACTION = 0.8
-
-
-@dataclass(frozen=True)
-class Mode:
-    name: str
-    temperature: float  # разброс выдачи AudioMuse
-    novelty: float  # бонус за незнакомые треки (минус значит «лучше знакомое»)
-    explore: float  # шанс подмешать «разведку» из другого кластера
-    recent_days: float  # не повторять треки, игравшие за эти дни
-    favorites: int  # сколько уже любимых треков кластера подмешивать в кандидаты
-
-
-MODES = {
-    "favorite": Mode("favorite", 0.35, -0.3, 0.05, 2, 12),
-    "balanced": Mode("balanced", 0.6, 0.15, 0.15, 3, 4),
-    "discover": Mode("discover", 1.0, 0.7, 0.3, 30, 0),
-}
+FORGOTTEN_AFTER = 60 * DAY
 
 # Веса слагаемых оценки «дослушает ли» (признаки нормируются внутри порции)
 WEIGHTS = {
-    "wave": dict(session=0.30, anchor=0.25, taste=0.15, negative=0.25, session_negative=0.35, artist=0.8, transition=0.2),
-    "continue": dict(session=0.15, anchor=0.45, taste=0.20, negative=0.25, session_negative=0.35, artist=0.5, transition=0.2),
+    "wave": dict(session=0.30, anchor=0.25, taste=0.15, negative=0.25, session_negative=0.35,
+                 artist=0.8, album=0.3, transition=0.2, context=0.7),
+    "continue": dict(session=0.15, anchor=0.45, taste=0.20, negative=0.25, session_negative=0.35,
+                     artist=0.5, album=0.2, transition=0.2, context=0.5),
 }
 
 PITCH = {"C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6, "GB": 6,
@@ -102,12 +91,51 @@ def _z(values: np.ndarray) -> np.ndarray:
     return (values - values.mean()) / std if std > 1e-6 else np.zeros_like(values)
 
 
+def register_playback(
+    deps: Deps,
+    taste: TasteProfile,
+    track_id: str,
+    kind: str,
+    *,
+    track: Track | None = None,
+    position: float = 0.0,
+    duration: float = 0.0,
+    context_type: str = "",
+    context_id: str = "",
+    session: str = "",
+    mode: str = "",
+    source: str = "manual",
+    cluster: int | None = None,
+    device: str = "",
+) -> None:
+    """Любое прослушивание (в волне, альбоме, плейлисте): в базу, в Navidrome и в профиль."""
+    track = track or taste.track_info.get(track_id)
+    deps.store.add_event(
+        Event(
+            ts=time.time(), track_id=track_id, kind=kind, artist=track.artist if track else "",
+            session=session, position=position, duration=duration, mode=mode, source=source,
+            cluster=cluster, album_id=track.album_id if track else "", artist_id=track.artist_id if track else "",
+            context_type=context_type, context_id=context_id, device=device,
+        )
+    )
+    try:
+        threshold = min(240.0, 0.5 * duration) if duration else 240.0
+        if kind == "complete" or position >= threshold:
+            deps.library.scrobble(track_id, submission=True, time_ms=int(time.time() * 1000))
+        if kind == "dislike":
+            deps.library.set_rating(track_id, 1)
+    except Exception:  # noqa: BLE001
+        log.warning("Не удалось синхронизировать %s с Navidrome", track_id, exc_info=True)
+    taste.note(track, track_id, kind)
+
+
 @dataclass
 class Pick:
     cluster: int
     score: float
     explore: bool
     reason: str
+    source: str = "audiomuse"
 
 
 class WaveSession:
@@ -118,20 +146,29 @@ class WaveSession:
         self,
         deps: Deps,
         profile: TasteProfile,
-        mode: str = "balanced",
+        settings: WaveSettings | str | None = None,
         *,
         taste: TasteProfile | None = None,
         exclude: tuple[str, ...] | list[str] = (),
         kind: str = "wave",
+        title: str = "",
+        context_id: str = "",
+        device: str = "",
         seed: int | None = None,
     ):
         self.id = secrets.token_urlsafe(8)
         self.deps = deps
-        self.profile = profile  # откуда берём якоря: вкус целиком или один плейлист
+        self.profile = profile  # откуда берём якоря: вкус целиком или один плейлист/альбом/артист
         self.taste = taste or profile  # долгосрочный вкус для ранжирования
-        self.mode = MODES.get(mode, MODES["balanced"])
+        if isinstance(settings, str):
+            settings = WaveSettings(character=settings)
+        self.settings = (settings or WaveSettings()).merged({})
+        self.tuning = tune(self.settings)
         self.kind = kind
-        self.weights = WEIGHTS[kind]
+        self.title = title
+        self.context_id = context_id
+        self.device = device
+        self.weights = WEIGHTS["wave" if kind == "wave" else "continue"]
         self.rng = np.random.default_rng(seed)
         self.lock = threading.Lock()
 
@@ -142,13 +179,15 @@ class WaveSession:
         self.skipped: list[tuple[str, np.ndarray]] = []
         self.completed: list[str] = []
         self.shown: set[str] = set(exclude)
-        self.recent_artists: deque[str] = deque(maxlen=4)
+        self.recent_artists: deque[str] = deque(maxlen=6)
         self.queue: list[Track] = []
         self.current: Track | None = None
         self.picks: dict[str, Pick] = {}
-        self.served: Counter[int] = Counter()  # сколько треков из каждого кластера уже выдано
+        self.served: Counter[int] = Counter()
         self.consecutive_skips = 0
         self.avoid: int | None = None
+        self.explore_boost = 0  # сколько ближайших порций после «встряхнуть» идут с усиленной разведкой
+        self._cluster_fit: np.ndarray | None = None
         self.touched = time.time()
 
     # --- публичный интерфейс ---
@@ -159,23 +198,29 @@ class WaveSession:
     def advance(self, track_id: str, outcome: str, position: float = 0.0, duration: float = 0.0) -> Track | None:
         """Трек закончился или его пропустили: учесть реакцию и выдать следующий."""
         self.touched = time.time()
-        track = self.current if self.current and self.current.id == track_id else self.taste.track_info.get(track_id)
+        track = self._track(track_id)
         duration = duration or (track.duration if track else 0.0)
         kind = classify(outcome, position, duration)
-        artist = track.artist if track else ""
         if kind != "error":
-            self._learn(track_id, artist, kind, position, duration)
-        if artist:
-            self.recent_artists.append(artist.lower())
+            self._learn(track_id, track, kind, position, duration)
+        if track and track.artist:
+            self.recent_artists.append(track.artist.lower())
         return self._next()
 
     def like(self, track_id: str, liked: bool = True) -> None:
         self.touched = time.time()
-        track = self.current if self.current and self.current.id == track_id else self.taste.track_info.get(track_id)
-        artist = track.artist if track else ""
+        track = self._track(track_id)
         v = self._vec(track_id)
         cluster = self._cluster_of(track_id, v)
-        self._record(track_id, artist, "like" if liked else "unlike", 0.0, 0.0, cluster)
+        self.deps.store.add_event(
+            Event(
+                ts=time.time(), track_id=track_id, kind="like" if liked else "unlike",
+                artist=track.artist if track else "", session=self.id, mode=self.tuning.character,
+                source=self._source(track_id), cluster=cluster, album_id=track.album_id if track else "",
+                artist_id=track.artist_id if track else "", context_type=self.kind,
+                context_id=self.context_id, device=self.device,
+            )
+        )
         try:
             (self.deps.library.star if liked else self.deps.library.unstar)(track_id)
         except Exception:  # noqa: BLE001
@@ -184,20 +229,27 @@ class WaveSession:
             track.starred = liked
         if not liked:
             return
-        self.taste.note(track_id, artist, "like")
+        self.taste.note(track, track_id, "like", weight=1.5)
         if cluster is not None:
             self.mult[cluster] = min(1.8, self.mult[cluster] * 1.15)
             self.successes[cluster, time_bucket(time.time())] += 1.5
         if v is not None:
             self.session_vec = v if self.session_vec is None else unit(0.55 * self.session_vec + 0.45 * v)
 
-    def set_mode(self, mode: str) -> None:
-        """Сменить характер волны: текущий трек играет дальше, очередь пересобирается."""
-        self.mode = MODES.get(mode, self.mode)
-        for t in self.queue:
-            self.shown.discard(t.id)
-        self.queue.clear()
-        self._refill()
+    def set_settings(self, settings: WaveSettings) -> None:
+        """Применить настройки: текущий трек играет дальше, очередь пересобирается."""
+        self.settings = settings
+        self.tuning = tune(settings)
+        self._cluster_fit = None
+        self._rebuild_queue()
+
+    def shake(self) -> None:
+        """«Встряхнуть»: уйти от текущего звучания и пару порций смелее исследовать вкус."""
+        if self.current and self.current.id in self.picks:
+            self.avoid = self.picks[self.current.id].cluster
+        self.explore_boost = 2
+        self.served.clear()
+        self._rebuild_queue()
 
     def reason(self, track_id: str) -> str:
         pick = self.picks.get(track_id)
@@ -206,7 +258,7 @@ class WaveSession:
     def snapshot(self) -> dict:
         """Состояние сессии для отладки: как сместились веса кластеров."""
         return {
-            "mode": self.mode.name,
+            "settings": self.settings.to_dict(),
             "kind": self.kind,
             "consecutive_skips": self.consecutive_skips,
             "completed": len(self.completed),
@@ -225,12 +277,14 @@ class WaveSession:
 
     # --- обучение на реакции ---
 
-    def _learn(self, track_id: str, artist: str, kind: str, position: float, duration: float) -> None:
+    def _learn(self, track_id: str, track: Track | None, kind: str, position: float, duration: float) -> None:
         v = self._vec(track_id)
         cluster = self._cluster_of(track_id, v)
-        self._record(track_id, artist, kind, position, duration, cluster)
-        self._sync(track_id, kind, position, duration)
-        self.taste.note(track_id, artist, kind)
+        register_playback(
+            self.deps, self.taste, track_id, kind, track=track, position=position, duration=duration,
+            context_type=self.kind, context_id=self.context_id, session=self.id, mode=self.tuning.character,
+            source=self._source(track_id), cluster=cluster, device=self.device,
+        )
         bucket = time_bucket(time.time())
 
         if kind == "complete":
@@ -265,7 +319,7 @@ class WaveSession:
                 dot = float(self.session_vec @ v)
                 if dot > 0:
                     self.session_vec = unit(self.session_vec - 0.6 * dot * v)
-        self._purge(v, artist, cluster, threshold=0.45 if strong else 0.55)
+        self._purge(v, track.artist if track else "", cluster, threshold=0.45 if strong else 0.55)
 
     def _purge(self, v: np.ndarray | None, artist: str, cluster: int | None, threshold: float) -> None:
         """Убрать из очереди всё, что похоже на только что пропущенный трек."""
@@ -283,27 +337,13 @@ class WaveSession:
                 keep.append(t)
         self.queue = keep
 
-    def _record(self, track_id: str, artist: str, kind: str, position: float, duration: float, cluster: int | None) -> None:
-        self.deps.store.add_event(
-            Event(
-                ts=time.time(), track_id=track_id, kind=kind, artist=artist, session=self.id,
-                position=position, duration=duration, mode=self.mode.name, source=self.kind, cluster=cluster,
-            )
-        )
-
-    def _sync(self, track_id: str, kind: str, position: float, duration: float) -> None:
-        """Прослушивание и дизлайк уходят в Navidrome: их увидят все клиенты."""
-        library = self.deps.library
-        try:
-            threshold = min(240.0, 0.5 * duration) if duration else 240.0
-            if kind == "complete" or position >= threshold:
-                library.scrobble(track_id, submission=True, time_ms=int(time.time() * 1000))
-            if kind == "dislike":
-                library.set_rating(track_id, 1)
-        except Exception:  # noqa: BLE001
-            log.warning("Не удалось синхронизировать %s с Navidrome", track_id, exc_info=True)
-
     # --- очередь ---
+
+    def _rebuild_queue(self) -> None:
+        for t in self.queue:
+            self.shown.discard(t.id)
+        self.queue.clear()
+        self._refill()
 
     def _next(self) -> Track | None:
         if len(self.queue) < self.LOW_WATER:
@@ -321,6 +361,38 @@ class WaveSession:
     def _refill(self) -> None:
         batch = self._batch(self.BATCH) or self._fallback(self.BATCH)
         self.queue.extend(batch)
+        if self.explore_boost:
+            self.explore_boost -= 1
+
+    def _bucket_stats(self) -> tuple[np.ndarray, np.ndarray]:
+        if not self.tuning.context_aware:
+            return self.successes.sum(axis=1) / BUCKETS, self.failures.sum(axis=1) / BUCKETS
+        b = time_bucket(time.time())
+        succ = self.successes[:, b] + 0.25 * (self.successes.sum(axis=1) - self.successes[:, b])
+        fail = self.failures[:, b] + 0.25 * (self.failures.sum(axis=1) - self.failures[:, b])
+        return succ, fail
+
+    def _cluster_context_fit(self) -> np.ndarray:
+        """Множитель кластера под настройки: настроение и занятие, а для «Забытого» —
+        сколько в кластере любимого, что давно не звучало."""
+        if self._cluster_fit is None:
+            fit = np.ones(len(self.profile.clusters))
+            for c in self.profile.clusters:
+                if self.tuning.has_target:
+                    feats = self.deps.vectors.features(c.members[:15])
+                    scores = [match(track_traits(f), self.tuning.target) for f in feats.values()]
+                    fit[c.index] *= np.exp(2.0 * float(np.mean(scores))) if scores else 1.0
+                if self.tuning.character == "forgotten":
+                    fit[c.index] *= 0.15 + len(self._forgotten(c.members)) / max(1, len(c.members))
+            self._cluster_fit = fit
+        return self._cluster_fit
+
+    def _forgotten(self, ids: list[str]) -> list[str]:
+        now = time.time()
+        return [
+            i for i in ids
+            if self.taste.track_weight.get(i, 0.0) > 0.5 and now - self.taste.last_played.get(i, 0.0) > FORGOTTEN_AFTER
+        ]
 
     def _choose_clusters(self) -> list[tuple[int, bool]]:
         """Thompson sampling: (кластер, это разведка?)."""
@@ -329,27 +401,27 @@ class WaveSession:
             return [(0, False)]
         share = np.array([c.share for c in clusters])
         served = np.array([self.served[c.index] for c in clusters], dtype=float)
-        if self.kind == "continue":
+        if self.kind != "wave":
             return self._choose_by_share(share, served)
 
-        b = time_bucket(time.time())
-        succ = self.successes[:, b] + 0.5 * (self.successes.sum(axis=1) - self.successes[:, b])
-        fail = self.failures[:, b] + 0.5 * (self.failures.sum(axis=1) - self.failures[:, b])
+        succ, fail = self._bucket_stats()
         theta = self.rng.beta(1 + succ, 1 + fail)
         affinity = 1.0
         if self.session_vec is not None:
             affinity = 1 + 0.6 * np.clip(self.profile.centers @ self.session_vec, 0, None)
-        satiety = np.exp(-0.07 * served)  # даже любимое приедается, если играет подряд
-        p = theta * np.sqrt(share) * affinity * self.mult * satiety
+        satiety = np.exp(-self.tuning.satiety * served)  # даже любимое приедается, если играет подряд
+        fit = self._cluster_context_fit()
+        p = theta * np.sqrt(share) * affinity * self.mult * satiety * fit
         if self.avoid is not None:
             p[self.avoid] *= 0.05
             self.avoid = None
         order = np.argsort(-p)
         main = int(order[0])
-        if self.rng.random() < self.mode.explore or self.consecutive_skips >= 2:
+        explore = min(0.6, self.tuning.explore + (0.35 if self.explore_boost else 0.0))
+        if self.rng.random() < explore or self.consecutive_skips >= 2:
             others = order[1:]
             posterior = (1 + succ[others]) / (2 + succ[others] + fail[others])
-            w = self.mult[others] * posterior / np.sqrt(share[others])
+            w = self.mult[others] * posterior * fit[others] / np.sqrt(share[others])
             return [(main, False), (int(self.rng.choice(others, p=w / w.sum())), True)]
         second = int(order[1])
         if p[second] >= 0.5 * p[main]:
@@ -373,6 +445,13 @@ class WaveSession:
         p = 1.0 / (np.arange(len(core)) + 3.0)
         return [str(s) for s in self.rng.choice(core, size=3, replace=False, p=p / p.sum())]
 
+    def _favorites_pool(self, cluster) -> list[str]:
+        """Уже любимые треки кластера; для «Забытого» — только те, что давно не звучали."""
+        pool = [m for m in cluster.members if m not in self.shown]
+        if self.tuning.character == "forgotten":
+            pool = self._forgotten(pool)
+        return pool[: self.tuning.favorites * 3]
+
     def _candidates(self, c: int, n: int) -> dict[str, Candidate]:
         cluster = self.profile.clusters[c]
         seeds = self._seeds(cluster)
@@ -383,22 +462,23 @@ class WaveSession:
         subtract = [i for i, _ in reversed(self.skipped) if i in self.picks and self.picks[i].cluster == c][:3]
         rows: list[Candidate] = []
         try:
-            rows = self.deps.sim.alchemy(add, subtract, n=n, temperature=self.mode.temperature)
+            rows = self.deps.sim.alchemy(add, subtract, n=n, temperature=self.tuning.temperature)
         except Exception:  # noqa: BLE001
             log.warning("Song Alchemy недоступен, ищу похожие по отдельным трекам", exc_info=True)
         if not rows:
             for seed in seeds:
                 try:
-                    rows += self.deps.sim.similar(seed, n=max(5, n // len(seeds)))
+                    found = self.deps.sim.similar(seed, n=max(5, n // len(seeds)))
+                    rows += [Candidate(r.id, r.title, r.artist, source="similar") for r in found]
                 except Exception:  # noqa: BLE001
                     log.warning("AudioMuse не нашёл похожих для %s", seed, exc_info=True)
         out = {r.id: r for r in rows}
-        if self.mode.favorites:
-            pool = [m for m in cluster.members[: self.mode.favorites * 3] if m not in self.shown]
+        if self.tuning.favorites:
+            pool = self._favorites_pool(cluster)
             if pool:
-                for m in self.rng.choice(pool, size=min(len(pool), self.mode.favorites), replace=False):
+                for m in self.rng.choice(pool, size=min(len(pool), self.tuning.favorites), replace=False):
                     info = self.taste.track_info.get(str(m))
-                    out.setdefault(str(m), Candidate(id=str(m), artist=info.artist if info else ""))
+                    out.setdefault(str(m), Candidate(str(m), artist=info.artist if info else "", source="favorites"))
         return out
 
     def _batch(self, k: int) -> list[Track]:
@@ -406,13 +486,15 @@ class WaveSession:
         quotas = {chosen[0][0]: k} if len(chosen) == 1 else {chosen[0][0]: k - k // 2, chosen[1][0]: k // 2}
         explore = {c for c, is_explore in chosen if is_explore}
         source: dict[str, int] = {}
+        origin: dict[str, str] = {}
         tracks: dict[str, Track] = {}
         vecs: dict[str, np.ndarray] = {}
         allowed: list[str] = []
         for attempt in (1, 3):  # если фильтры съели почти всё, просим у AudioMuse втрое больше
             for c, _ in chosen:
-                for cid in self._candidates(c, n=max(20, 6 * quotas[c]) * attempt):
+                for cid, cand in self._candidates(c, n=max(20, 6 * quotas[c]) * attempt).items():
                     source.setdefault(cid, c)
+                    origin.setdefault(cid, cand.source)
             fresh = [i for i in source if i not in tracks and i not in self.shown and i not in self.taste.disliked]
             tracks.update(self.deps.library.songs(fresh))
             vecs.update(self._vecs(fresh))
@@ -424,7 +506,7 @@ class WaveSession:
 
         x = np.stack([vecs[i] for i in allowed])
         clusters = np.array([source[i] for i in allowed])
-        scores = self._score(allowed, x, clusters, tracks)
+        scores = self._score(allowed, x, clusters, tracks, k)
         picked = self._select(allowed, x, scores, clusters, tracks, quotas, k)
         score_of = dict(zip(allowed, scores))
         batch = []
@@ -432,7 +514,10 @@ class WaveSession:
             c = source[i]
             self.shown.add(i)
             self.served[c] += 1
-            self.picks[i] = Pick(cluster=c, score=float(score_of[i]), explore=c in explore, reason=self._reason(c, c in explore))
+            self.picks[i] = Pick(
+                cluster=c, score=float(score_of[i]), explore=c in explore,
+                reason=self._reason(c, c in explore, origin.get(i, "")), source=origin.get(i, "audiomuse"),
+            )
             batch.append(tracks[i])
         return batch
 
@@ -446,15 +531,17 @@ class WaveSession:
             if t.rating == 1:
                 self.taste.disliked.add(i)
                 continue
+            if self.taste.is_banned(t):
+                continue  # артист или альбом с оценкой 1★
             if self.taste.track_skips.get(i, 0.0) >= 1.5:
                 continue  # пропускал дважды за последнее время: пусть отдохнёт
             last = max(t.last_played or 0.0, self.taste.last_played.get(i, 0.0))
-            if last and now - last < self.mode.recent_days * DAY:
+            if last and now - last < self.tuning.repeat_days * DAY:
                 continue
             allowed.append(i)
         return allowed
 
-    def _score(self, ids: list[str], x: np.ndarray, clusters: np.ndarray, tracks: dict[str, Track]) -> np.ndarray:
+    def _score(self, ids: list[str], x: np.ndarray, clusters: np.ndarray, tracks: dict[str, Track], k: int) -> np.ndarray:
         """Оценка «дослушает ли»: близость к якорю, вкусу и сессии минус похожесть на пропущенное."""
         w = self.weights
         n = len(ids)
@@ -465,17 +552,21 @@ class WaveSession:
 
         now = time.time()
         novelty = np.zeros(n)
+        forgotten = np.zeros(n)
         for j, i in enumerate(ids):
             t = tracks[i]
             heard = i in self.taste.known or t.play_count > 0 or t.starred
             last = max(t.last_played or 0.0, self.taste.last_played.get(i, 0.0))
-            novelty[j] = 1.0 if not heard else 0.0 if last and now - last < 60 * DAY else 0.5
+            recent = bool(last) and now - last < FORGOTTEN_AFTER
+            novelty[j] = 1.0 if not heard else 0.0 if recent else 0.5
+            forgotten[j] = 1.0 if heard and not recent and self.taste.track_weight.get(i, 0.0) > 0.5 else 0.0
         artist = np.array([self.taste.artist_affinity(tracks[i].artist) for i in ids])
+        album = np.array([self.taste.album_affinity(tracks[i].album_id) for i in ids])
 
+        feats = self.deps.vectors.features(ids + ([self._last_id()] if self._last_id() else []))
         transition = np.zeros(n)
         prev = self._last_id()
         if prev:
-            feats = self.deps.vectors.features(ids + [prev])
             transition = np.array([transition_cost(feats.get(prev), feats.get(i)) for i in ids])
 
         anchor_weight = w["anchor"] + (0.0 if self.session_vec is not None else w["session"])
@@ -483,22 +574,30 @@ class WaveSession:
             anchor_weight * _z(f_anchor)
             + w["taste"] * _z(f_taste)
             - w["negative"] * _z(f_neg)
-            + self.mode.novelty * novelty
+            + self.tuning.novelty * novelty
+            + self.tuning.forgotten * forgotten
             + w["artist"] * artist
+            + w["album"] * album
             - w["transition"] * transition
         )
         if self.session_vec is not None:
             score += w["session"] * _z(x @ self.session_vec)
         if self.skipped:
-            recent = np.stack([v for _, v in self.skipped[-20:]])
-            f_skip = (x @ recent.T).max(axis=1)
+            recent_skips = np.stack([v for _, v in self.skipped[-20:]])
+            f_skip = (x @ recent_skips.T).max(axis=1)
             score -= w["session_negative"] * _z(f_skip)
             score[f_skip > 0.8] -= 5.0  # почти копия того, что только что пропустили
+        if self.tuning.has_target:
+            fit = np.array([match(track_traits(feats.get(i)), self.tuning.target) for i in ids])
+            score += w["context"] * (_z(fit) + fit)
+            if (fit >= -0.2).sum() >= k:
+                score[fit < -0.2] -= 3.0  # явно не под настроение
         return score
 
     def _select(self, ids, x, scores, clusters, tracks, quotas, k) -> list[str]:
         """MMR: лучшие по оценке, но не похожие друг на друга и без повтора артистов."""
-        blocked = set(self.recent_artists) | {t.artist.lower() for t in self.queue[-3:]}
+        window = list(self.recent_artists)[-self.tuning.artist_window:]
+        blocked = set(window) | {t.artist.lower() for t in self.queue[-3:]}
         if self.current:
             blocked.add(self.current.artist.lower())
         chosen: list[int] = []
@@ -516,7 +615,7 @@ class WaveSession:
                     if strict and (per_cluster[int(clusters[n])] >= quotas.get(int(clusters[n]), 0) or artist in blocked):
                         continue
                     redundancy = max((float(x[n] @ x[m]) for m in chosen), default=0.0)
-                    value = scores[n] - 0.6 * max(redundancy, 0.0)
+                    value = scores[n] - self.tuning.redundancy * max(redundancy, 0.0)
                     if value > best_value:
                         best, best_value = n, value
                 if best is None:
@@ -557,10 +656,10 @@ class WaveSession:
         vecs = self._vecs([t.id for t in songs])
         out = []
         for t in songs:
-            if t.id in self.shown or t.id in self.taste.disliked or t.id not in vecs:
+            if t.id in self.shown or t.id not in vecs or self.taste.is_banned(t):
                 continue
             self.shown.add(t.id)
-            self.picks[t.id] = Pick(self.profile.nearest(vecs[t.id]), 0.0, True, "Случайное из библиотеки")
+            self.picks[t.id] = Pick(self.profile.nearest(vecs[t.id]), 0.0, True, "Случайное из библиотеки", "random")
             out.append(t)
             if len(out) >= k:
                 break
@@ -568,13 +667,26 @@ class WaveSession:
 
     # --- вспомогательное ---
 
-    def _reason(self, c: int, explore: bool) -> str:
+    def _reason(self, c: int, explore: bool, origin: str) -> str:
         label = self.profile.clusters[c].label
         if self.kind == "continue":
             return f"Похоже на плейлист: {label}" if label else "Похоже на плейлист"
+        if self.kind == "seed":
+            return f"Волна по: {self.title}" if self.title else "Волна"
+        if origin == "favorites":
+            return "Давно не слушали" if self.tuning.character == "forgotten" else "Из любимого"
         if explore:
             return f"Разведка: {label}" if label else "Разведка"
         return f"В духе: {label}" if label else "Моя волна"
+
+    def _track(self, track_id: str) -> Track | None:
+        if self.current and self.current.id == track_id:
+            return self.current
+        return self.taste.track_info.get(track_id)
+
+    def _source(self, track_id: str) -> str:
+        pick = self.picks.get(track_id)
+        return pick.source if pick else "manual"
 
     def _last_id(self) -> str | None:
         if self.queue:

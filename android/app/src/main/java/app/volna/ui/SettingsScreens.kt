@@ -85,6 +85,9 @@ fun SettingsPage(key: String, nav: Navigator) {
                         Hint("Те же настройки открываются кнопкой под волной на главной. Меняются на ходу: текущий трек доигрывает, пересобирается очередь.")
                         Spacer(Modifier.height(16.dp))
                         WaveSettingsPanel(onShake = { VolnaPlayer.shake() })
+                        Spacer(Modifier.height(16.dp))
+                        Pill("Настроить вкус заново", VIcons.Artist) { Onboarding.show = true }
+                        Hint("Снова выбрать любимых артистов и то, как вам слушается.")
                     }
                     "playback" -> PlaybackPage()
                     "interface" -> InterfacePage()

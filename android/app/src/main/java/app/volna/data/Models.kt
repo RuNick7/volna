@@ -247,3 +247,10 @@ data class Imports(val available: Boolean, val items: List<ImportItem>) {
         fun from(o: JSONObject) = Imports(o.optBoolean("available"), o.optJSONArray("items").mapObjects(ImportItem::from))
     }
 }
+
+/** Первый вход: артисты для выбора (отмеченные — уже с liked) и текущие настройки волны. */
+data class OnboardingData(val done: Boolean, val artists: List<Item>, val settings: JSONObject) {
+    companion object {
+        fun from(o: JSONObject) = OnboardingData(o.optBoolean("done"), Item.list(o.optJSONArray("artists")), o.optJSONObject("settings") ?: JSONObject())
+    }
+}

@@ -198,6 +198,10 @@ class VolnaApi(val prefs: Prefs) {
     suspend fun search(query: String) = SearchResult.from(get("/api/search?q=${q(query)}"))
     suspend fun lyrics(trackId: String) = Lyrics.from(get("/api/lyrics/${q(trackId)}"))
     suspend fun imports() = Imports.from(get("/api/imports"))
+    suspend fun onboarding() = OnboardingData.from(get("/api/onboarding"))
+    suspend fun similarArtists(artistId: String) = Item.list(get("/api/onboarding/similar/${q(artistId)}").optJSONArray("artists"))
+    suspend fun finishOnboarding(artistIds: List<String>, settings: JSONObject): JSONObject =
+        post("/api/onboarding", JSONObject().put("artists", JSONArray(artistIds)).put("settings", settings))
     suspend fun startImport(url: String) = ImportItem.from(post("/api/imports", JSONObject().put("url", url)))
 
     suspend fun mix(type: String, id: String, size: Int) = Mix.from(

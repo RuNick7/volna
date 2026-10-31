@@ -145,3 +145,20 @@ def test_queue_plays_are_recorded(client):
     response = client.post("/api/events", json={"track_id": track["id"], "outcome": "complete",
                                                  "duration": track["duration"], "context_type": "queue"})
     assert response.status_code == 200 and response.json()["kind"] == "complete"
+
+
+def test_onboarding_picks_artists_suggests_similar_and_saves_preferences(client):
+    first = client.get("/api/onboarding").json()
+    assert first["done"] is False and len(first["artists"]) > 10
+    picked = [a for a in first["artists"] if not a["liked"]][:3]
+
+    similar = client.get(f"/api/onboarding/similar/{picked[0]['id']}").json()["artists"]
+    assert similar and picked[0]["id"] not in {a["id"] for a in similar}
+
+    done = client.post("/api/onboarding", json={"artists": [a["id"] for a in picked],
+                                                "settings": {"character": "discover", "no_vocals": True}}).json()
+    assert done["liked"] == 3 and done["settings"]["character"] == "discover"
+    again = client.get("/api/onboarding").json()
+    assert again["done"] is True and again["settings"]["no_vocals"] is True
+    liked = {a["id"] for a in again["artists"] if a["liked"]}
+    assert {a["id"] for a in picked} <= liked  # отмеченные — первыми и со звездой

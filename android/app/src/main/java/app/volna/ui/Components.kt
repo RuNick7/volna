@@ -639,7 +639,7 @@ private fun likeTrack(track: Track) {
 val CHARACTERS = listOf("favorite" to "Любимое", "balanced" to "Баланс", "discover" to "Незнакомое", "forgotten" to "Забытое")
 val MOODS = listOf("any" to "Любое", "energetic" to "Бодрое", "happy" to "Весёлое", "calm" to "Спокойное", "sad" to "Грустное")
 val ACTIVITIES = listOf("any" to "Любое", "wake" to "Просыпаюсь", "commute" to "В дороге", "work" to "Работаю", "workout" to "Тренируюсь", "sleep" to "Засыпаю")
-private val CHARACTER_HINTS = mapOf(
+val CHARACTER_HINTS = mapOf(
     "favorite" to "Больше того, что вы уже любите и часто дослушиваете.",
     "balanced" to "Любимое вперемешку с новым, похожим на ваш вкус.",
     "discover" to "В основном треки, которые вы ещё не слышали.",

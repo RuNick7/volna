@@ -52,6 +52,8 @@ import app.volna.ui.LibraryScreen
 import app.volna.ui.LocalNav
 import app.volna.ui.MiniPlayer
 import app.volna.ui.MixScreen
+import app.volna.ui.Onboarding
+import app.volna.ui.OnboardingScreen
 import app.volna.ui.Navigator
 import app.volna.ui.Palette
 import app.volna.ui.QueueScreen
@@ -84,7 +86,14 @@ class MainActivity : ComponentActivity() {
         setContent {
             VolnaTheme {
                 val needLogin by app.api.needLogin.collectAsState()
-                if (needLogin) ConnectScreen() else VolnaRoot()
+                if (needLogin) {
+                    ConnectScreen()
+                } else {
+                    Box(Modifier.fillMaxSize()) {
+                        VolnaRoot()
+                        if (Onboarding.show) OnboardingScreen { Onboarding.show = false }
+                    }
+                }
             }
         }
     }
@@ -122,6 +131,9 @@ private fun VolnaRoot() {
     var actionsFor by remember { mutableStateOf<Track?>(null) }
     var tuneOpen by remember { mutableStateOf(false) }
     val activity = LocalContext.current as? Activity
+    LaunchedEffect(Unit) { // первый вход в Volna: сначала любимые артисты и предпочтения
+        runCatching { VolnaPlayer.api.onboarding() }.onSuccess { if (!it.done) Onboarding.show = true }
+    }
     LaunchedEffect(Shared.url) {
         Shared.url?.let { nav.go(Screen.Import(it)) }
         Shared.url = null

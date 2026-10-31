@@ -29,6 +29,7 @@ from .config import ServerConfig, Settings, normalize_url
 from .engine import Steer, WaveSession, build_mix, classify, register_playback
 from .explo import Explo, source_of
 from .imports import Importer
+from .onboarding import ONBOARDED_KEY, ArtistMap, artist_choices
 from .library import LibraryIndex, track_json
 from .models import LibrarySnapshot
 from .profile import TasteProfile, build_context_profile, build_profile
@@ -103,6 +104,11 @@ class MixRequest(BaseModel):
 class PlaylistCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     track_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class OnboardingForm(BaseModel):
+    artists: list[str] = Field(default_factory=list, max_length=200)
+    settings: dict = Field(default_factory=dict)
 
 
 class ImportRequest(BaseModel):
@@ -236,6 +242,10 @@ class ProfileManager:
     def loaded_index(self) -> LibraryIndex | None:
         return self._index
 
+    def rebuild_in_background(self) -> None:
+        """Пересобрать вкус сейчас, не дожидаясь 25 событий (например, после выбора любимых артистов)."""
+        self._start("profile", self._rebuild)
+
     def refresh(self) -> LibraryIndex:
         """Синхронизировать библиотеку сейчас и дождаться (после докачки при импорте)."""
         self._sync(force=True)
@@ -297,6 +307,14 @@ class Space:
         self.defaults = defaults  # у основного пространства — настройки времён, когда пользователь был один
         self.profiles = ProfileManager(deps)
         self.sessions: dict[str, WaveSession] = {}
+        self._artist_map: ArtistMap | None = None
+
+    def artist_map(self, index: LibraryIndex) -> ArtistMap:
+        """Похожие артисты для первого входа; считается один раз на снимок библиотеки."""
+        current = self._artist_map
+        if current is None or current.index is not index:
+            current = self._artist_map = ArtistMap(index, self.deps.vectors)
+        return current
 
     @property
     def store(self) -> Store:
@@ -857,6 +875,44 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         if index is not None and playlist.id:
             index.add_playlist(playlist)
         return {"id": playlist.id, "name": playlist.name, "count": len(playlist.track_ids)}
+
+    # --- первый вход: любимые артисты и предпочтения ---
+
+    @app.get("/api/onboarding")
+    def onboarding(sp: Space = Depends(current_space)) -> dict:
+        return {
+            "done": bool(sp.setting(ONBOARDED_KEY)),
+            "artists": artist_choices(index_or_503(sp)),
+            "settings": sp.settings().to_dict(),
+        }
+
+    @app.get("/api/onboarding/similar/{artist_id}")
+    def onboarding_similar(artist_id: str, sp: Space = Depends(current_space)) -> dict:
+        """Похожие по звучанию: появляются рядом с отмеченным артистом, как в Яндексе."""
+        index = index_or_503(sp)
+        if isinstance(sp.deps.sim, NoSimilarity):
+            return {"artists": []}
+        ids = sp.artist_map(index).similar(artist_id)
+        return {"artists": [index.artist_json(index.artists[i]) for i in ids if i in index.artists]}
+
+    @app.post("/api/onboarding")
+    def finish_onboarding(body: OnboardingForm, sp: Space = Depends(current_space)) -> dict:
+        index = index_or_503(sp)
+        liked = 0
+        for artist_id in body.artists:
+            artist = index.artists.get(artist_id)
+            if artist is None or artist.starred:
+                continue
+            sp.deps.run_io(sp.deps.library.star, artist_id, "artist")  # звезда видна во всех клиентах
+            sp.store.add_event(Event(ts=time.time(), track_id=artist_id, kind="like", entity="artist"))
+            mark_starred(sp, artist_id, "artist", True)
+            liked += 1
+        settings = sp.settings().merged(body.settings)
+        sp.store.put_setting(SETTINGS_KEY, settings.to_dict())
+        sp.store.put_setting(ONBOARDED_KEY, True)
+        if liked and not isinstance(sp.deps.sim, NoSimilarity):
+            sp.profiles.rebuild_in_background()  # первая волна — уже вокруг выбранных
+        return {"done": True, "liked": liked, "settings": settings.to_dict()}
 
     # --- импорт плейлистов по ссылке ---
 

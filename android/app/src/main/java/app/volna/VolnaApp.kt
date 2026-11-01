@@ -6,6 +6,7 @@ import app.volna.data.VolnaApi
 import app.volna.player.Downloads
 import app.volna.player.Offline
 import app.volna.player.VolnaPlayer
+import app.volna.ui.SearchHistory
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
@@ -25,6 +26,7 @@ class VolnaApp : Application(), SingletonImageLoader.Factory {
         Offline.init(this, api, prefs)
         VolnaPlayer.init(this, api)
         Updates.init(this, api.client)
+        SearchHistory.init(prefs)
     }
 
     /** Обложки идут через сервис Volna, поэтому Coil ходит тем же клиентом, с токеном входа. */

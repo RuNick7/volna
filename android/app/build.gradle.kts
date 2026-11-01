@@ -11,8 +11,8 @@ android {
         applicationId = "app.volna"
         minSdk = 26
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.9.1"
+        versionCode = 14
+        versionName = "0.9.2"
     }
 
     buildTypes {

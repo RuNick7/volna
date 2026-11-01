@@ -50,6 +50,11 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("lyrics", false)
         set(value) = prefs.edit().putBoolean("lyrics", value).apply()
 
+    /** История поиска: JSON-список запросов и открытого из поиска. */
+    var searchHistory: String
+        get() = prefs.getString("search_history", "[]") ?: "[]"
+        set(value) = prefs.edit().putString("search_history", value).apply()
+
     // --- загрузки и офлайн ---
 
     /** Скачивать только по Wi‑Fi (сеть без оплаты за трафик). */

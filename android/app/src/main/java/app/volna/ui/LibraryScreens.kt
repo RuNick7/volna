@@ -14,6 +14,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -79,56 +83,133 @@ fun textFieldColors() = OutlinedTextFieldDefaults.colors(
 @Composable
 fun SearchScreen(nav: Navigator, onMore: (Track) -> Unit) {
     val playing by VolnaPlayer.state.collectAsState()
-    var query by rememberSaveable { mutableStateOf("") }
-    var result by remember { mutableStateOf<SearchResult?>(null) }
+    val query = SearchMemory.query
+    // вернулись из альбома или с другой вкладки — найденное уже есть, не ищем заново
+    var result by remember { mutableStateOf(SearchMemory.result.takeIf { SearchMemory.resultFor == SearchMemory.query.trim() }) }
     var error by remember { mutableStateOf<String?>(null) }
+    val focus = LocalFocusManager.current
     LaunchedEffect(query) {
-        if (query.isBlank()) {
+        val q = query.trim()
+        if (q.isEmpty()) {
             result = null
+            error = null
             return@LaunchedEffect
         }
+        if (result != null && SearchMemory.resultFor == q) return@LaunchedEffect
         delay(250)
         try {
-            result = Offline.search(query.trim()) // без сети ищет в скачанном
+            val found = Offline.search(q) // без сети ищет в скачанном
+            result = found
+            SearchMemory.result = found
+            SearchMemory.resultFor = q
             error = null
         } catch (e: java.io.IOException) {
             error = e.message
         }
+    }
+    fun open(item: Item) {
+        SearchHistory.add(item)
+        nav.go(Screen.Entity(item.type, item.id))
     }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(horizontal = 16.dp)) {
         item { PageHeader("Поиск") }
         item {
             OutlinedTextField(
                 value = query,
-                onValueChange = { query = it },
+                onValueChange = { SearchMemory.query = it },
                 placeholder = { Text("Трек, альбом, артист или плейлист") },
                 leadingIcon = { VIcon(VIcons.Search, null, tint = Palette.Muted) },
+                trailingIcon = if (query.isNotEmpty()) ({ IconButtonV(VIcons.Close, "Очистить", 36.dp) { SearchMemory.query = "" } }) else null,
                 singleLine = true,
                 shape = RoundedCornerShape(50),
                 colors = textFieldColors(),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = {
+                    SearchHistory.addQuery(query)
+                    focus.clearFocus()
+                }),
                 modifier = Modifier.fillMaxWidth(),
             )
         }
         val r = result
         when {
-            error != null -> item { Empty(error.orEmpty()) }
+            query.isBlank() && SearchHistory.entries.isNotEmpty() -> {
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) { SectionTitle("История поиска") }
+                        Text(
+                            "Очистить",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Palette.Muted,
+                            modifier = Modifier.padding(top = 12.dp).clickable { SearchHistory.clear() }.padding(8.dp),
+                        )
+                    }
+                }
+                items(SearchHistory.entries.toList(), key = { it.key }) { entry ->
+                    HistoryRow(entry, onRemove = { SearchHistory.remove(entry) }) {
+                        when {
+                            entry.track != null -> {
+                                SearchHistory.add(entry.track)
+                                VolnaPlayer.playList(listOf(entry.track), 0, PlayContext("search", entry.track.title, "Поиск"))
+                            }
+                            entry.item != null -> open(entry.item)
+                            else -> {
+                                SearchHistory.addQuery(entry.query)
+                                SearchMemory.query = entry.query
+                            }
+                        }
+                    }
+                }
+            }
             query.isBlank() -> item { Empty("Ищите по названию, артисту или альбому. С артиста можно сразу запустить волну.") }
+            error != null -> item { Empty(error.orEmpty()) }
             r == null -> item { Loading() }
             r.tracks.isEmpty() && r.albums.isEmpty() && r.artists.isEmpty() && r.playlists.isEmpty() -> item { Empty("Ничего не нашлось.") }
             else -> {
-                item { ItemShelf("Артисты", r.artists) { nav.go(Screen.Entity(it.type, it.id)) } }
+                item { ItemShelf("Артисты", r.artists, ::open) }
                 if (r.tracks.isNotEmpty()) item { SectionTitle("Треки") }
                 itemsIndexed(r.tracks, key = { _, t -> "t" + t.id }) { i, track ->
                     TrackRow(track, playing.track?.id == track.id, onMore = onMore) {
+                        SearchHistory.add(track)
                         VolnaPlayer.playList(r.tracks, i, PlayContext("search", query, "«$query»"))
                     }
                 }
-                item { ItemShelf("Альбомы", r.albums) { nav.go(Screen.Entity(it.type, it.id)) } }
-                item { ItemShelf("Плейлисты", r.playlists) { nav.go(Screen.Entity(it.type, it.id)) } }
+                item { ItemShelf("Альбомы", r.albums, ::open) }
+                item { ItemShelf("Плейлисты", r.playlists, ::open) }
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+/** Строка истории: запрос или то, что открывали; крестик убирает её из истории. */
+@Composable
+private fun HistoryRow(entry: SearchEntry, onRemove: () -> Unit, onOpen: () -> Unit) {
+    val item = entry.item
+    val track = entry.track
+    val kind = mapOf("album" to "Альбом", "artist" to "Артист", "playlist" to "Плейлист")
+    val (title, subtitle) = when {
+        track != null -> track.title to "Трек · ${track.artist}"
+        item != null -> item.title to listOfNotNull(kind[item.type], item.subtitle.takeIf { it.isNotEmpty() && item.type != "artist" }).joinToString(" · ")
+        else -> entry.query to ""
+    }
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClick = onOpen).padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (track != null || item != null) {
+            Cover(track?.cover ?: item?.cover.orEmpty(), Modifier.size(44.dp), round = item?.type == "artist", corner = 6.dp)
+        } else {
+            Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) { VIcon(VIcons.Clock, null, 22.dp, Palette.Muted) }
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (subtitle.isNotEmpty()) {
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Palette.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        IconButtonV(VIcons.Close, "Убрать из истории", 36.dp, onClick = onRemove)
     }
 }
 

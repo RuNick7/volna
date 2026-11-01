@@ -131,10 +131,12 @@ private fun ServicePage() {
             VolnaPlayer.reset()
             Downloads.clear() // как в Spotify: скачанное принадлежит аккаунту
             Offline.forget()
+            SearchHistory.clear()
+            SearchMemory.clear()
             app.api.logout()
         }
     }
-    Hint("Чтобы подключиться к другому серверу, выйдите и введите его адрес. Скачанное при выходе удаляется с телефона.")
+    Hint("Чтобы подключиться к другому серверу, выйдите и введите его адрес. Скачанное и история поиска при выходе удаляются с телефона.")
 }
 
 @OptIn(ExperimentalLayoutApi::class)

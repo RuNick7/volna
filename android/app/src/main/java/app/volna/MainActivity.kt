@@ -28,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -149,6 +150,16 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun VolnaRoot() {
     val nav = remember { Navigator() }
+    val holder = rememberSaveableStateHolder()
+    val kept = remember { mutableSetOf<String>() }
+    val alive = nav.stack.mapIndexed { i, screen -> "$i:$screen" }
+    LaunchedEffect(alive) { // экраны, снятые со стека, забываем
+        kept += alive
+        kept.filter { it !in alive }.forEach {
+            holder.removeState(it)
+            kept -= it
+        }
+    }
     val state by VolnaPlayer.state.collectAsState()
     var actionsFor by remember { mutableStateOf<Track?>(null) }
     var tuneOpen by remember { mutableStateOf(false) }
@@ -174,7 +185,9 @@ private fun VolnaRoot() {
         Topo(Modifier.fillMaxSize(), mode = UiPrefs.background, dim = nav.current != Screen.Home, playing = state.playing)
         Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f)) {
-                when (val screen = nav.current) {
+                // у каждого экрана в стеке своё сохранённое состояние: «назад» возвращает прокрутку,
+                // фильтры и поиск такими, какими их оставили
+                holder.SaveableStateProvider("${nav.stack.lastIndex}:${nav.current}") { when (val screen = nav.current) {
                     Screen.Home -> HomeScreen(nav, onMore = { actionsFor = it }, onTune = { tuneOpen = true })
                     Screen.Search -> SearchScreen(nav) { actionsFor = it }
                     Screen.Library -> LibraryScreen(nav)
@@ -187,7 +200,7 @@ private fun VolnaRoot() {
                     Screen.AddArtist -> AddArtistScreen(nav)
                     Screen.Downloaded -> DownloadedScreen(nav) { actionsFor = it }
                     is Screen.SettingsPage -> SettingsPage(screen.key, nav)
-                }
+                } }
             }
             OfflineBar { nav.go(Screen.Downloaded) }
             if (nav.current != Screen.Home && state.track != null) MiniPlayer { nav.go(Screen.Home) }

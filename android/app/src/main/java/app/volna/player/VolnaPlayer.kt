@@ -703,6 +703,6 @@ object VolnaPlayer {
 
     private fun problem(e: IOException): String = when (e) {
         is ApiException -> e.message ?: "Ошибка сервиса"
-        else -> "Сервис Volna недоступен: проверьте адрес в настройках"
+        else -> "Сервис VaginaWave недоступен: проверьте адрес в настройках"
     }
 }

@@ -101,7 +101,7 @@ class VolnaApi(val prefs: Prefs) {
                 is UnknownHostException -> "Сервер не найден: проверьте адрес"
                 is SocketTimeoutException -> "Сервер не отвечает"
                 is SSLException -> "Не удалось установить защищённое соединение"
-                null -> "По этому адресу нет сервиса Volna"
+                null -> "По этому адресу нет сервиса VaginaWave"
                 else -> "Не удалось подключиться: ${failure?.message}"
             },
         )

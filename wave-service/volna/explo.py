@@ -45,7 +45,7 @@ class Explo:
             "/api/ui/login", data={"username": self.user, "password": self.password}, headers={"X-CSRF-Token": self._csrf}
         )
         if r.status_code in (401, 403):
-            raise ExploError("Explo не принял логин и пароль из настроек Volna")
+            raise ExploError("Explo не принял логин и пароль из настроек VaginaWave")
         r.raise_for_status()
 
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:

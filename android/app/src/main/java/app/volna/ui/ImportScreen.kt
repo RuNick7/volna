@@ -89,7 +89,7 @@ fun ImportScreen(sharedUrl: String, nav: Navigator) {
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(horizontal = 16.dp)) {
         item { PageHeader("Импорт") { nav.back() } }
         if (imports?.available == false) {
-            item { Hint("Импорт не настроен: сервису Volna нужен доступ к Explo на сервере.") }
+            item { Hint("Импорт не настроен: сервису VaginaWave нужен доступ к Explo на сервере.") }
             return@LazyColumn
         }
         item {
@@ -108,7 +108,7 @@ fun ImportScreen(sharedUrl: String, nav: Navigator) {
             Spacer(Modifier.height(12.dp))
             Pill(if (sending) "Отправляю…" else "Импортировать", VIcons.Playlist, primary = true) { start() }
             error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 10.dp)) }
-            Hint("«Любимые треки» Spotify по ссылке не отдаёт: выделите их в Spotify и добавьте в обычный плейлист. Быстрее всего — «Поделиться → Volna» прямо из Spotify.")
+            Hint("«Любимые треки» Spotify по ссылке не отдаёт: выделите их в Spotify и добавьте в обычный плейлист. Быстрее всего — «Поделиться → VaginaWave» прямо из Spotify.")
             Spacer(Modifier.height(20.dp))
         }
         val items = imports?.items.orEmpty()

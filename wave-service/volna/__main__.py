@@ -31,7 +31,7 @@ def main() -> None:
     )
     if settings.auth:
         source += ", вход для любого пользователя Navidrome"
-    print(f"Volna: http://{host}:{port}  ({source})")
+    print(f"VaginaWave: http://{host}:{port}  ({source})")
     uvicorn.run(create_app(settings), host=host, port=port, log_level="warning")
 
 

@@ -24,7 +24,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- «Поделиться → Volna» в Spotify и Apple Music: импорт плейлиста по ссылке -->
+            <!-- «Поделиться → VaginaWave» в Spotify и Apple Music: импорт плейлиста по ссылке -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />

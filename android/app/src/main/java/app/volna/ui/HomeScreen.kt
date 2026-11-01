@@ -200,46 +200,49 @@ private fun Hero(state: PlayerState, nav: Navigator, modifier: Modifier, onMore:
 @Composable
 private fun LyricsPanel(lyrics: Lyrics, state: PlayerState) {
     val list = rememberLazyListState()
-    val position = state.positionMs / 1000.0
-    val current = if (lyrics.synced) lyrics.lines.indexOfLast { (it.time ?: 0.0) <= position + 0.25 } else -1
+    val current = currentLine(lyrics, state.positionMs)
     LaunchedEffect(current) { if (current >= 0) list.animateScrollToItem((current - 2).coerceAtLeast(0)) }
-    LazyColumn(
-        state = list,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        contentPadding = PaddingValues(vertical = 40.dp),
-        modifier = Modifier
-            .widthIn(max = 360.dp)
-            .fillMaxWidth()
-            .height(252.dp)
-            .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
-            .drawWithContent {
-                drawContent()
-                // края растворяются, чтобы строки уходили в фон, а не обрезались
-                drawRect(
-                    Brush.verticalGradient(0f to Color.Transparent, 0.18f to Color.Black, 0.82f to Color.Black, 1f to Color.Transparent),
-                    blendMode = BlendMode.DstIn,
-                )
-            },
-    ) {
-        itemsIndexed(lyrics.lines) { i, line ->
-            val active = i == current
-            val seekable = lyrics.synced && line.time != null && state.durationMs > 0
-            Text(
-                line.text.ifBlank { "♪" },
-                style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, lineHeight = 25.sp),
-                fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
-                color = when {
-                    !lyrics.synced || active -> Palette.Fg
-                    i < current -> Palette.Muted.copy(alpha = 0.35f)
-                    else -> Palette.Muted
+    Box(contentAlignment = Alignment.TopEnd) {
+        LazyColumn(
+            state = list,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            contentPadding = PaddingValues(vertical = 40.dp),
+            modifier = Modifier
+                .widthIn(max = 360.dp)
+                .fillMaxWidth()
+                .height(252.dp)
+                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                .drawWithContent {
+                    drawContent()
+                    // края растворяются, чтобы строки уходили в фон, а не обрезались
+                    drawRect(
+                        Brush.verticalGradient(0f to Color.Transparent, 0.18f to Color.Black, 0.82f to Color.Black, 1f to Color.Transparent),
+                        blendMode = BlendMode.DstIn,
+                    )
                 },
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(enabled = seekable) { VolnaPlayer.seek((line.time!! * 1000 / state.durationMs).toFloat()) }
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-            )
+        ) {
+            itemsIndexed(lyrics.lines) { i, line ->
+                val active = i == current
+                val seekable = lyrics.synced && line.time != null && state.durationMs > 0
+                Text(
+                    line.text.ifBlank { "♪" },
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, lineHeight = 25.sp),
+                    fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                    color = when {
+                        !lyrics.synced || active -> Palette.Fg
+                        i < current -> Palette.Muted.copy(alpha = 0.35f)
+                        else -> Palette.Muted
+                    },
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = seekable) { VolnaPlayer.seek((line.time!! * 1000 / state.durationMs).toFloat()) }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                )
+            }
         }
+        // как в Spotify: развернуть текст на весь экран
+        IconButtonV(VIcons.Expand, "Текст на весь экран", 40.dp, tint = Palette.Fg) { LyricsFull.show = true }
     }
 }
 
@@ -274,7 +277,7 @@ private fun WaveButton(state: PlayerState) {
 }
 
 @Composable
-private fun Progress(state: PlayerState) {
+fun Progress(state: PlayerState) {
     val fraction = if (state.durationMs > 0) (state.positionMs.toFloat() / state.durationMs).coerceIn(0f, 1f) else 0f
     Box(
         Modifier

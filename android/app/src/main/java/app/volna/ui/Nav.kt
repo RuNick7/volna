@@ -86,9 +86,9 @@ fun <T> load(vararg keys: Any?, fetch: suspend () -> T): Loaded<T> {
         value = try {
             Load.Done(fetch())
         } catch (e: IOException) {
-            Load.Failed(e.message?.takeIf { it.isNotBlank() } ?: "Сервис Volna недоступен")
+            Load.Failed(e.message?.takeIf { it.isNotBlank() } ?: "Сервис VaginaWave недоступен")
         } catch (e: JSONException) {
-            Load.Failed("Сервис ответил неожиданно: обновите Volna на компьютере")
+            Load.Failed("Сервис ответил неожиданно: обновите сервис VaginaWave на сервере")
         }
     }
     return Loaded(state.value) { version++ }

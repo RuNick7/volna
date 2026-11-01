@@ -1,6 +1,6 @@
 {
-  "name": "Volna",
-  "short_name": "Volna",
+  "name": "VaginaWave",
+  "short_name": "VaginaWave",
   "description": "Navidrome-клиент с бесконечной «Моей волной»",
   "start_url": "./",
   "display": "standalone",

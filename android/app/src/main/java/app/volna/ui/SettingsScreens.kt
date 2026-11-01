@@ -43,7 +43,7 @@ fun SettingsScreen(nav: Navigator) {
     val server = load("settings-server") { VolnaPlayer.api.server() }
     val info = (server.value as? Load.Done)?.value
     val serverSubtitle = when {
-        server.value is Load.Failed -> "Сервис Volna недоступен"
+        server.value is Load.Failed -> "Сервис VaginaWave недоступен"
         info == null -> "Navidrome и AudioMuse"
         info.mode == "demo" -> "Демо-библиотека · подключите свой Navidrome"
         else -> "Подключено: ${info.navidromeUrl.substringAfter("://")}"
@@ -107,7 +107,7 @@ private fun ServicePage() {
     GroupLabel("Подключение")
     Hint(buildString {
         if (app.prefs.user.isNotEmpty()) append("Вход: ${app.prefs.user}\n")
-        append("Сервис Volna: ${app.prefs.serviceUrl}")
+        append("Сервис VaginaWave: ${app.prefs.serviceUrl}")
     })
     Spacer(Modifier.height(16.dp))
     Pill("Выйти") {
@@ -154,7 +154,7 @@ private fun ServerPage() {
     val i = info
     GroupLabel("Состояние")
     when {
-        error != null -> Hint("Сервис Volna недоступен: $error")
+        error != null -> Hint("Сервис VaginaWave недоступен: $error")
         i == null -> Loading()
         i.mode == "demo" -> Hint("Сейчас играет демо-библиотека. Введите адрес своего Navidrome, логин и пароль.")
         else -> {
@@ -216,7 +216,7 @@ private fun ServerPage() {
         }
     }
     result?.let { Hint(it) }
-    Hint("Пароли и токен хранятся только на сервере, где работает Volna, и не показываются здесь.")
+    Hint("Пароли и токен хранятся только на сервере, где работает VaginaWave, и не показываются здесь.")
 }
 
 @Composable
@@ -349,7 +349,7 @@ private fun LibraryPage() {
 
 @Composable
 private fun AboutPage() {
-    Text("Volna ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
+    Text("VaginaWave ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
     Hint("Клиент Navidrome с бесконечной «Моей волной», которая учится на ваших пропусках. Звучание треков анализирует AudioMuse-AI.")
     Hint("Исходники: github.com/RuNick7/volna")
 }

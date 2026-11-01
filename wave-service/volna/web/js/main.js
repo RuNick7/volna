@@ -233,7 +233,7 @@ function start() {
   get("/api/server").then((s) => {
     document.getElementById("status").textContent = s.mode === "demo" ? "демо-библиотека" : "";
     if (s.syncing) toast("Синхронизирую библиотеку…");
-  }).catch((e) => e.status !== 401 && toast("Сервис Volna недоступен"));
+  }).catch((e) => e.status !== 401 && toast("Сервис VaginaWave недоступен"));
   route();
 }
 

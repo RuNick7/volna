@@ -87,7 +87,7 @@ function serverPage(root, { navigate }) {
       h("button", { class: "btn btn--primary", type: "submit" }, "Подключиться"),
       h("button", { class: "btn", type: "button", onClick: () => test() }, "Проверить"),
     ),
-    h("p", { class: "hint" }, "Пароль и токен хранятся только на компьютере, где запущен сервис Volna (файл data/volna.db), и не показываются в интерфейсе."),
+    h("p", { class: "hint" }, "Пароль и токен хранятся только на сервере, где работает VaginaWave, и не показываются в интерфейсе."),
   );
   const disconnect = h("button", { class: "link-btn", type: "button", onClick: forget }, "Отключиться и вернуться к демо-библиотеке");
   root.append(pageHeader("Сервер", { back: true }), form, disconnect);
@@ -298,7 +298,7 @@ function aboutPage(root) {
   root.append(pageHeader("О приложении", { back: true }), body);
   get("/api/health").then((s) => {
     body.replaceChildren(
-      group("Volna",
+      group("VaginaWave",
         h("p", { class: "page-meta" }, `Версия ${s.version} · ${s.mode === "demo" ? "демо-библиотека" : "свой сервер"}`),
         h("p", { class: "hint" }, "Клиент Navidrome с бесконечной «Моей волной», которая учится на ваших пропусках. Звучание треков анализирует AudioMuse-AI."),
         h("a", { class: "link-btn", href: "https://github.com/RuNick7/volna", target: "_blank", rel: "noopener" }, "Репозиторий на GitHub"),

@@ -478,7 +478,7 @@ def check_server(server: ServerConfig) -> dict:
 def create_app(settings: Settings | None = None, deps: Deps | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     rt = Runtime(settings, deps)
-    app = FastAPI(title="Volna", version=__version__)
+    app = FastAPI(title="VaginaWave", version=__version__)
     app.state.runtime = rt
     auth = Auth(rt.config, settings.auth)
     app.state.auth = auth
@@ -926,7 +926,7 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         """Плейлист или альбом Spotify, Apple Music: Explo докачает недостающее, плейлист появится у вас."""
         importer = app.state.importer
         if importer is None:
-            raise HTTPException(503, "Импорт не настроен: Volna нужен доступ к Explo")
+            raise HTTPException(503, "Импорт не настроен: VaginaWave нужен доступ к Explo")
         url = body.url.strip()
         if source_of(url) is None:
             raise HTTPException(422, "Нужна ссылка на плейлист или альбом Spotify или Apple Music")

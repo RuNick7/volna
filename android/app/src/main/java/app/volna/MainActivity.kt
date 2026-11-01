@@ -51,6 +51,8 @@ import app.volna.ui.LibraryListScreen
 import app.volna.ui.LibraryScreen
 import app.volna.ui.LocalNav
 import app.volna.ui.MiniPlayer
+import app.volna.ui.LyricsFull
+import app.volna.ui.LyricsScreen
 import app.volna.ui.MixScreen
 import app.volna.ui.Onboarding
 import app.volna.ui.OnboardingScreen
@@ -91,6 +93,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     Box(Modifier.fillMaxSize()) {
                         VolnaRoot()
+                        if (LyricsFull.show) LyricsScreen { LyricsFull.show = false }
                         if (Onboarding.show) OnboardingScreen { Onboarding.show = false }
                     }
                 }

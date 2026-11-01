@@ -70,7 +70,7 @@ fun ConnectScreen() {
         Column(
             Modifier.fillMaxSize().statusBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
         ) {
-            Text("volna", style = MaterialTheme.typography.titleMedium.copy(letterSpacing = 6.sp), modifier = Modifier.padding(top = 12.dp))
+            Text("vaginawave", style = MaterialTheme.typography.titleMedium.copy(letterSpacing = 6.sp), modifier = Modifier.padding(top = 12.dp))
             Spacer(Modifier.height(96.dp))
             Text("Вход", style = MaterialTheme.typography.headlineLarge)
             Hint("Адрес вашего Navidrome, логин и пароль от него.")

@@ -48,7 +48,9 @@ class Similarity(Protocol):
 class Vectors:
     """Эмбеддинги и признаки с кэшем в SQLite; недостающие запрашиваются параллельно."""
 
-    RETRY_AFTER = DAY
+    # трек ещё не проанализирован: AudioMuse разбирает новые треки по ночному расписанию,
+    # так что спрашиваем снова через 6 часов — утром свежая докачка уже попадёт в волну
+    RETRY_AFTER = DAY / 4
 
     def __init__(self, sim: Similarity, store: Store, workers: int = 8):
         self.sim = sim

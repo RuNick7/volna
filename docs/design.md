@@ -1,4 +1,4 @@
-# Визуальный язык Volna
+# Визуальный язык VaginaWave
 
 Прототип: [`wave-service/volna/web`](../wave-service/volna/web). Android-приложение повторяет те же правила.
 

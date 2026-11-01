@@ -301,7 +301,7 @@ function aboutPage(root) {
       group("VaginaWave",
         h("p", { class: "page-meta" }, `Версия ${s.version} · ${s.mode === "demo" ? "демо-библиотека" : "свой сервер"}`),
         h("p", { class: "hint" }, "Клиент Navidrome с бесконечной «Моей волной», которая учится на ваших пропусках. Звучание треков анализирует AudioMuse-AI."),
-        h("a", { class: "link-btn", href: "https://github.com/RuNick7/volna", target: "_blank", rel: "noopener" }, "Репозиторий на GitHub"),
+        h("a", { class: "link-btn", href: "https://github.com/RuNick7/VaginaWave", target: "_blank", rel: "noopener" }, "Репозиторий на GitHub"),
       ),
       group("Горячие клавиши",
         h("dl", { class: "keys" },

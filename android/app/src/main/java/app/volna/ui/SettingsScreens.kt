@@ -351,7 +351,7 @@ private fun LibraryPage() {
 private fun AboutPage() {
     Text("VaginaWave ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
     Hint("Клиент Navidrome с бесконечной «Моей волной», которая учится на ваших пропусках. Звучание треков анализирует AudioMuse-AI.")
-    Hint("Исходники: github.com/RuNick7/volna")
+    Hint("Исходники: github.com/RuNick7/VaginaWave")
 }
 
 /** Настройки интерфейса, которые читает App: фон. Обложки — в CoverStyle. */

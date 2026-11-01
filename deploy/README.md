@@ -1,6 +1,6 @@
-# Volna на сервере
+# VaginaWave на сервере
 
-Сервис Volna работает на том же сервере, что Navidrome и AudioMuse, отдельным Docker-контейнером. Приложение и веб-версия открываются по адресу Navidrome с путём `/volna`, например `https://music.example.com/volna/`. Войти может любой пользователь Navidrome своим логином и паролем. У каждого свои волна, история пропусков, профиль вкуса и настройки, а лайки и прослушивания уходят в Navidrome от его имени. Общий у всех только кэш звучания из AudioMuse. Адреса Navidrome и AudioMuse меняет администратор Navidrome или тот, кто подключил сервис.
+Сервис VaginaWave работает на том же сервере, что Navidrome и AudioMuse, отдельным Docker-контейнером. Приложение и веб-версия открываются по адресу Navidrome с путём `/volna`, например `https://music.example.com/volna/`. Войти может любой пользователь Navidrome своим логином и паролем. У каждого свои волна, история пропусков, профиль вкуса и настройки, а лайки и прослушивания уходят в Navidrome от его имени. Общий у всех только кэш звучания из AudioMuse. Адреса Navidrome и AudioMuse меняет администратор Navidrome или тот, кто подключил сервис.
 
 ```
 телефон ──https──▶ Caddy ─┬─ /volna/* ──▶ volna:8765 ──▶ navidrome:4533
@@ -12,7 +12,7 @@
 
 | Путь на сервере | Что это |
 |---|---|
-| `/opt/volna/docker-compose.yml` | Контейнер Volna, копия [`docker-compose.yml`](docker-compose.yml) |
+| `/opt/volna/docker-compose.yml` | Контейнер VaginaWave, копия [`docker-compose.yml`](docker-compose.yml) |
 | `/opt/volna/wave-service/` | Код сервиса, из него собирается образ |
 | `/opt/volna/data/` | Настройки, сохранённый сервер, пароли вошедших пользователей, история волны каждого (`server-*.db`). Только эта папка и важна |
 
@@ -28,7 +28,7 @@
 
 ## Импорт из Spotify и Apple Music
 
-Плейлисты по ссылке Volna импортирует через Explo из того же стека: он достаёт список треков и докачивает недостающее, а Volna собирает плейлист у того, кто импортировал. Volna входит в веб-интерфейс Explo, логин и пароль лежат в `/opt/volna/.env`:
+Плейлисты по ссылке VaginaWave импортирует через Explo из того же стека: он достаёт список треков и докачивает недостающее, а VaginaWave собирает плейлист у того, кто импортировал. VaginaWave входит в веб-интерфейс Explo, логин и пароль лежат в `/opt/volna/.env`:
 
 ```
 EXPLO_USER=…
@@ -39,7 +39,7 @@ EXPLO_PASSWORD=…
 
 ## Caddy
 
-В `Caddyfile` стека Navidrome основной сайт отдаёт `/volna/*` в Volna, а остальное, как и раньше, в Navidrome:
+В `Caddyfile` стека Navidrome основной сайт отдаёт `/volna/*` в VaginaWave, а остальное, как и раньше, в Navidrome:
 
 ```caddy
 {$ND_DOMAIN}:{$HTTPS_PORT} {

@@ -54,7 +54,12 @@ class VolnaApi(val prefs: Prefs) {
         return client.newCall(request).execute().use { response ->
             val text = response.body.string()
             if (!response.isSuccessful) {
-                val detail = runCatching { JSONObject(text).optString("detail") }.getOrNull()
+                // detail — строка от сервиса или список ошибок проверки данных (422) от FastAPI
+                val detail = when (val d = runCatching { JSONObject(text).opt("detail") }.getOrNull()) {
+                    is String -> d
+                    is JSONArray -> d.optJSONObject(0)?.optString("msg")
+                    else -> null
+                }
                 throw ApiException(response.code, detail?.takeIf { it.isNotBlank() } ?: "Ошибка ${response.code}")
             }
             text
@@ -198,6 +203,13 @@ class VolnaApi(val prefs: Prefs) {
     suspend fun search(query: String) = SearchResult.from(get("/api/search?q=${q(query)}"))
     suspend fun lyrics(trackId: String) = Lyrics.from(get("/api/lyrics/${q(trackId)}"))
     suspend fun imports() = Imports.from(get("/api/imports"))
+    suspend fun likeTracks(trackIds: List<String>, liked: Boolean = true): JSONObject =
+        post("/api/like/tracks", JSONObject().put("track_ids", JSONArray(trackIds)).put("liked", liked))
+    suspend fun discography(artistId: String) = Discography.from(get("/api/lidarr/artist/${q(artistId)}"))
+    suspend fun downloadDiscography(artistId: String) = Discography.from(post("/api/lidarr/artist/${q(artistId)}"))
+    suspend fun lidarrAvailable() = get("/api/lidarr").optBoolean("available")
+    suspend fun findArtists(query: String) = FoundArtist.list(get("/api/lidarr/search?q=${q(query)}").optJSONArray("artists"))
+    suspend fun followArtist(mbid: String): JSONObject = post("/api/lidarr/follow", JSONObject().put("mbid", mbid))
     suspend fun onboarding() = OnboardingData.from(get("/api/onboarding"))
     suspend fun similarArtists(artistId: String) = Item.list(get("/api/onboarding/similar/${q(artistId)}").optJSONArray("artists"))
     suspend fun finishOnboarding(artistIds: List<String>, settings: JSONObject): JSONObject =

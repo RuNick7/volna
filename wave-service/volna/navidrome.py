@@ -246,6 +246,11 @@ class Navidrome:
     def unstar(self, item_id: str, entity: str = "track") -> None:
         self.call("unstar", **{self.STAR_PARAM[entity]: item_id})
 
+    def star_tracks(self, track_ids: list[str], liked: bool = True) -> None:
+        """Отметить сразу много треков: Subsonic принимает несколько id в одном запросе."""
+        for i in range(0, len(track_ids), 100):  # чтобы адрес запроса не разрастался
+            self.call("star" if liked else "unstar", id=track_ids[i : i + 100])
+
     def set_rating(self, track_id: str, rating: int) -> None:
         self.call("setRating", id=track_id, rating=rating)
 

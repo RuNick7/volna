@@ -206,6 +206,10 @@ class DemoWorld:
     def unstar(self, item_id: str, entity: str = "track") -> None:
         self._item(item_id).starred = False
 
+    def star_tracks(self, track_ids: list[str], liked: bool = True) -> None:
+        for track_id in track_ids:
+            (self.star if liked else self.unstar)(track_id)
+
     def set_rating(self, item_id: str, rating: int) -> None:
         self._item(item_id).rating = rating
 

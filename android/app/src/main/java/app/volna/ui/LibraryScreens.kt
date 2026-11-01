@@ -44,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import app.volna.data.Discography
 import app.volna.data.Mix
 import app.volna.data.Page
 import app.volna.data.SearchResult
@@ -52,6 +53,7 @@ import app.volna.player.PlayContext
 import app.volna.player.VolnaPlayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.IOException
 
 @Composable
 fun textFieldColors() = OutlinedTextFieldDefaults.colors(
@@ -143,6 +145,7 @@ fun LibraryScreen(nav: Navigator) {
                 Tile(VIcons.Artist, "Артисты", count = counts?.optInt("artists")?.toString().orEmpty()) { nav.go(Screen.LibraryList("artists")) }
                 Tile(VIcons.Clock, "Недавно слушали") { nav.go(Screen.LibraryList("recent")) }
                 Tile(VIcons.Playlist, "Импорт из Spotify", "Плейлист или альбом по ссылке") { nav.go(Screen.Import()) }
+                Tile(VIcons.Artist, "Добавить исполнителя", "Скачать дискографию через Lidarr") { nav.go(Screen.AddArtist) }
             }
         }
         item { SectionTitle("Недавно добавлены") }
@@ -265,6 +268,7 @@ fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Un
     var liked by remember(type, id) { mutableStateOf<Boolean?>(null) }
     var allTracks by rememberSaveable(type, id) { mutableStateOf(false) }
     var allAlbums by rememberSaveable(type, id) { mutableStateOf(false) }
+    var allLiked by remember(type, id) { mutableStateOf(false) } // «Лайкнуть все» уже нажато
     val scope = rememberCoroutineScope()
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(horizontal = 16.dp)) {
         item { PageHeader("") { nav.back() } }
@@ -277,7 +281,8 @@ fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Un
                 item { EntityHeader(p, type) }
                 val context = PlayContext(type, id, p.item.title)
                 // у артиста — все треки по популярности: сначала пять, остальные по кнопке
-                val tracks = if (type == "artist") p.tracks.ifEmpty { p.top } else p.tracks
+                val tracks = (if (type == "artist") p.tracks.ifEmpty { p.top } else p.tracks)
+                    .let { list -> if (allLiked) list.map { it.copy(liked = true) } else list }
                 item {
                     if (type == "artist") {
                         FlowRow(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -292,6 +297,16 @@ fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Un
                     } else {
                         PlayActions(tracks, context) {
                             Pill("Волна", VIcons.Wave) { VolnaPlayer.startWave(type, id); nav.go(Screen.Home) }
+                            if (tracks.any { !it.liked } && !allLiked) {
+                                Pill("Лайкнуть все", VIcons.Heart) {
+                                    allLiked = true // сердечки сразу, Navidrome — следом
+                                    scope.launch {
+                                        runCatching { VolnaPlayer.api.likeTracks(tracks.map { it.id }) }
+                                            .onSuccess { VolnaPlayer.say("Все ${tracks.size} ${plural(tracks.size, "трек", "трека", "треков")} в «Мне нравится»") }
+                                            .onFailure { allLiked = false; VolnaPlayer.say(it.message ?: "Не удалось отметить треки") }
+                                    }
+                                }
+                            }
                             if (type == "album") {
                                 LikePill(isLiked) {
                                     liked = !isLiked
@@ -301,6 +316,7 @@ fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Un
                         }
                     }
                 }
+                if (type == "artist") item { DiscographyRow(id) }
                 if (type == "artist" && tracks.isNotEmpty()) item { SectionTitle("Популярные треки") }
                 val shown = if (type == "artist" && !allTracks) tracks.take(ARTIST_TRACKS) else tracks
                 itemsIndexed(shown, key = { _, t -> t.id }) { i, track ->
@@ -325,6 +341,41 @@ fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Un
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+/** Дискография артиста через Lidarr: кнопка «Скачать» или сколько альбомов уже скачано. */
+@Composable
+private fun DiscographyRow(artistId: String) {
+    val loaded = load("discography", artistId) { VolnaPlayer.api.discography(artistId) }
+    var state by remember(artistId) { mutableStateOf<Discography?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val d = state ?: (loaded.value as? Load.Done)?.value ?: return
+    if (!d.available) return
+    if (d.following) {
+        Hint(
+            if (d.albums == 0) "Дискография на докачке: Lidarr уточняет список альбомов"
+            else "Дискография на докачке: есть ${d.have} из ${d.albums} ${plural(d.albums, "альбома", "альбомов", "альбомов")}",
+            Modifier.padding(bottom = 4.dp),
+        )
+        return
+    }
+    Row(Modifier.padding(bottom = 4.dp)) {
+        Pill(if (busy) "Ставлю на докачку…" else "Скачать дискографию", VIcons.Album) {
+            if (busy) return@Pill
+            busy = true
+            scope.launch {
+                try {
+                    state = VolnaPlayer.api.downloadDiscography(artistId)
+                    VolnaPlayer.say("Дискография поставлена на докачку")
+                } catch (e: IOException) {
+                    VolnaPlayer.say(e.message ?: "Lidarr не принял исполнителя")
+                } finally {
+                    busy = false
+                }
+            }
+        }
     }
 }
 

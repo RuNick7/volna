@@ -162,3 +162,14 @@ def test_onboarding_picks_artists_suggests_similar_and_saves_preferences(client)
     assert again["done"] is True and again["settings"]["no_vocals"] is True
     liked = {a["id"] for a in again["artists"] if a["liked"]}
     assert {a["id"] for a in picked} <= liked  # отмеченные — первыми и со звездой
+
+
+def test_like_all_tracks_of_a_playlist(client):
+    album = client.get("/api/library/albums?sort=alpha&limit=1").json()["items"][0]
+    tracks = client.get(f"/api/album/{album['id']}").json()["tracks"]
+    ids = [t["id"] for t in tracks]
+    done = client.post("/api/like/tracks", json={"track_ids": ids + ids[:1] + ["no-such-track"]}).json()
+    assert done == {"ok": True, "count": len(ids), "liked": True}  # повторы и чужие id отброшены
+    assert all(t["liked"] for t in client.get(f"/api/album/{album['id']}").json()["tracks"])
+    liked = {t["id"] for t in client.get("/api/library/liked").json()["tracks"]}
+    assert set(ids) <= liked

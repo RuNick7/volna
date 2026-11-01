@@ -29,6 +29,7 @@ from .config import ServerConfig, Settings, normalize_url
 from .engine import Steer, WaveSession, build_mix, classify, register_playback
 from .explo import Explo, source_of
 from .imports import Importer
+from .lidarr import Lidarr, LidarrError
 from .onboarding import ONBOARDED_KEY, ArtistMap, artist_choices
 from .library import LibraryIndex, track_json
 from .models import LibrarySnapshot
@@ -104,6 +105,15 @@ class MixRequest(BaseModel):
 class PlaylistCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     track_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class FollowRequest(BaseModel):
+    mbid: str = Field(min_length=10, max_length=64)
+
+
+class TracksLikeRequest(BaseModel):
+    track_ids: list[str] = Field(max_length=5000)
+    liked: bool = True
 
 
 class OnboardingForm(BaseModel):
@@ -511,6 +521,7 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         else None
     )
     app.state.importer = importer
+    app.state.lidarr = Lidarr(settings.lidarr_url, settings.lidarr_api_key) if settings.lidarr_url and settings.lidarr_api_key else None
     open_paths = {"/api/health", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}
 
     @app.middleware("http")
@@ -914,6 +925,60 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
             sp.profiles.rebuild_in_background()  # первая волна — уже вокруг выбранных
         return {"done": True, "liked": liked, "settings": settings.to_dict()}
 
+    # --- дискографии: исполнители на докачку через Lidarr ---
+
+    def lidarr_or_503() -> Lidarr:
+        if app.state.lidarr is None:
+            raise HTTPException(503, "Докачка дискографий не настроена: нужен доступ к Lidarr")
+        return app.state.lidarr
+
+    def lidarr_call(fn, *args):
+        try:
+            return fn(*args)
+        except LidarrError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Lidarr не отвечает: {exc}") from exc
+
+    @app.get("/api/lidarr/artist/{artist_id}")
+    def lidarr_artist(artist_id: str, sp: Space = Depends(current_space)) -> dict:
+        """Качается ли дискография артиста из библиотеки и сколько альбомов уже есть."""
+        if app.state.lidarr is None:
+            return {"available": False}
+        artist = index_or_503(sp).artists.get(artist_id)
+        if artist is None:
+            raise HTTPException(404, "Артист не найден")
+        lidarr = app.state.lidarr
+        return {"available": True, **lidarr_call(lambda: lidarr.status(lidarr.find(artist.name)))}
+
+    @app.post("/api/lidarr/artist/{artist_id}")
+    def lidarr_follow_artist(artist_id: str, sp: Space = Depends(current_space)) -> dict:
+        """«Скачать дискографию» со страницы артиста."""
+        lidarr = lidarr_or_503()
+        artist = index_or_503(sp).artists.get(artist_id)
+        if artist is None:
+            raise HTTPException(404, "Артист не найден")
+        known = lidarr_call(lidarr.find, artist.name)
+        mbid = known["foreignArtistId"] if known else lidarr_call(lidarr.resolve, artist.name)
+        followed = lidarr_call(lidarr.follow, mbid)
+        return {"available": True, **lidarr_call(lidarr.status, followed)}
+
+    @app.get("/api/lidarr/search")
+    def lidarr_search(q: str = "", sp: Space = Depends(current_space)) -> dict:
+        lidarr = lidarr_or_503()
+        return {"artists": lidarr_call(lidarr.search, q.strip()) if q.strip() else []}
+
+    @app.post("/api/lidarr/follow")
+    def lidarr_follow(body: FollowRequest, sp: Space = Depends(current_space)) -> dict:
+        """Исполнитель из поиска MusicBrainz: Soularr докачает его студийные альбомы и новые релизы."""
+        lidarr = lidarr_or_503()
+        followed = lidarr_call(lidarr.follow, body.mbid)
+        return {"ok": True, "name": followed.get("artistName", "")}
+
+    @app.get("/api/lidarr")
+    def lidarr_available(sp: Space = Depends(current_space)) -> dict:
+        return {"available": app.state.lidarr is not None}
+
     # --- импорт плейлистов по ссылке ---
 
     @app.get("/api/imports")
@@ -964,6 +1029,22 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
         mark_starred(sp, body.id, body.type, body.liked)
         sp.profiles.note_event()
         return {"ok": True, "liked": body.liked}
+
+    @app.post("/api/like/tracks")
+    def like_tracks(body: TracksLikeRequest, sp: Space = Depends(current_space)) -> dict:
+        """«Лайкнуть все» в плейлисте или альбоме: одной пачкой в Navidrome и событиями во вкус."""
+        index = sp.profiles.loaded_index()
+        ids = [i for i in dict.fromkeys(body.track_ids) if index is None or i in index.songs]
+        try:
+            sp.deps.library.star_tracks(ids, body.liked)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"Navidrome не принял отметки: {exc}") from exc
+        now = time.time()
+        for track_id in ids:
+            sp.store.add_event(Event(ts=now, track_id=track_id, kind="like" if body.liked else "unlike", entity="track"))
+            mark_starred(sp, track_id, "track", body.liked)
+        sp.profiles.note_event()
+        return {"ok": True, "count": len(ids), "liked": body.liked}
 
     # --- библиотека ---
 

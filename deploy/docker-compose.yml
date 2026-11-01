@@ -12,7 +12,9 @@ services:
       VOLNA_AUTH: "1"
       # импорт плейлистов по ссылке (Spotify, Apple Music) через Explo из того же стека
       EXPLO_URL: http://explo:7288
-    # логин веб-интерфейса Explo (EXPLO_USER, EXPLO_PASSWORD) — в /opt/volna/.env рядом, не в git
+      # пользователи ставят исполнителей на докачку дискографий (Lidarr + Soularr того же стека)
+      LIDARR_URL: http://lidarr:8686
+    # логин Explo (EXPLO_USER, EXPLO_PASSWORD) и ключ Lidarr (LIDARR_API_KEY) — в /opt/volna/.env рядом, не в git
     env_file:
       - path: .env
         required: false

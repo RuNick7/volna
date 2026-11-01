@@ -43,6 +43,7 @@ import app.volna.data.Track
 import app.volna.player.PlaybackService
 import app.volna.player.VolnaPlayer
 import app.volna.ui.ConnectScreen
+import app.volna.ui.AddArtistScreen
 import app.volna.ui.CoverStyle
 import app.volna.ui.EntityScreen
 import app.volna.ui.HomeScreen
@@ -160,6 +161,7 @@ private fun VolnaRoot() {
                     is Screen.Mix -> MixScreen(screen.type, screen.id, nav) { actionsFor = it }
                     Screen.Queue -> QueueScreen(nav) { actionsFor = it }
                     is Screen.Import -> ImportScreen(screen.url, nav)
+                    Screen.AddArtist -> AddArtistScreen(nav)
                     is Screen.SettingsPage -> SettingsPage(screen.key, nav)
                 }
             }

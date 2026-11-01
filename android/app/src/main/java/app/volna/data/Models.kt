@@ -254,3 +254,33 @@ data class OnboardingData(val done: Boolean, val artists: List<Item>, val settin
         fun from(o: JSONObject) = OnboardingData(o.optBoolean("done"), Item.list(o.optJSONArray("artists")), o.optJSONObject("settings") ?: JSONObject())
     }
 }
+
+/** Докачка дискографии артиста через Lidarr: отслеживается ли и сколько альбомов уже есть. */
+data class Discography(val available: Boolean, val following: Boolean, val albums: Int, val have: Int) {
+    companion object {
+        fun from(o: JSONObject) = Discography(o.optBoolean("available"), o.optBoolean("following"), o.optInt("albums"), o.optInt("have"))
+    }
+}
+
+/** Исполнитель из MusicBrainz (поиск Lidarr), которого можно поставить на докачку. */
+data class FoundArtist(
+    val mbid: String,
+    val name: String,
+    val note: String, // уточнение MusicBrainz или тип: «Russian rapper», «Group»
+    val overview: String,
+    val image: String,
+    val following: Boolean,
+) {
+    companion object {
+        fun from(o: JSONObject) = FoundArtist(
+            mbid = o.str("mbid"),
+            name = o.str("name"),
+            note = o.str("disambiguation").ifEmpty { o.str("type") },
+            overview = o.str("overview"),
+            image = o.str("image"),
+            following = o.optBoolean("following"),
+        )
+
+        fun list(a: JSONArray?) = a.mapObjects(::from)
+    }
+}

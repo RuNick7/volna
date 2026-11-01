@@ -24,6 +24,7 @@ class VolnaApp : Application(), SingletonImageLoader.Factory {
         Downloads.init(this, api, prefs) // до плеера: он читает скачанное из кэша загрузок
         Offline.init(this, api, prefs)
         VolnaPlayer.init(this, api)
+        Updates.init(this, api.client)
     }
 
     /** Обложки идут через сервис Volna, поэтому Coil ходит тем же клиентом, с токеном входа. */

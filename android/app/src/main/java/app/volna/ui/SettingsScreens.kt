@@ -34,6 +34,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.media3.exoplayer.offline.Download
+import app.volna.UpdateStep
+import app.volna.Updates
 import app.volna.data.ServerInfo
 import app.volna.player.Downloads
 import app.volna.player.Offline
@@ -48,6 +50,7 @@ fun SettingsScreen(nav: Navigator) {
     val app = LocalContext.current.applicationContext as VolnaApp
     val server = load("settings-server") { VolnaPlayer.api.server() }
     val info = (server.value as? Load.Done)?.value
+    val update by Updates.available.collectAsState()
     val serverSubtitle = when {
         server.value is Load.Failed -> "Сервис VaginaWave недоступен"
         info == null -> "Navidrome и AudioMuse"
@@ -69,7 +72,11 @@ fun SettingsScreen(nav: Navigator) {
                     "Библиотека и вкус",
                     info?.takeIf { it.tracks > 0 }?.let { "${it.tracks} ${plural(it.tracks, "трек", "трека", "треков")}" } ?: "Синхронизация и что система о вас знает",
                 ) { nav.go(Screen.SettingsPage("library")) }
-                Tile(VIcons.Info, "О приложении", "Версия ${BuildConfig.VERSION_NAME}") { nav.go(Screen.SettingsPage("about")) }
+                Tile(
+                    VIcons.Info,
+                    "О приложении",
+                    update?.let { "Версия ${BuildConfig.VERSION_NAME} · доступна ${it.version}" } ?: "Версия ${BuildConfig.VERSION_NAME}",
+                ) { nav.go(Screen.SettingsPage("about")) }
             }
         }
     }
@@ -446,9 +453,39 @@ private fun LibraryPage() {
 
 @Composable
 private fun AboutPage() {
+    val scope = rememberCoroutineScope()
+    val release by Updates.available.collectAsState()
+    val step by Updates.step.collectAsState()
+    var checking by remember { mutableStateOf(false) }
     Text("VaginaWave ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
     Hint("Клиент Navidrome с бесконечной «Моей волной», которая учится на ваших пропусках. Звучание треков анализирует AudioMuse-AI.")
     Hint("Исходники: github.com/RuNick7/VaginaWave")
+    Spacer(Modifier.height(24.dp))
+    GroupLabel("Обновления")
+    val r = release
+    if (r != null) {
+        Text("Доступна версия ${r.version}", style = MaterialTheme.typography.bodyLarge)
+        ReleaseNotes(r)
+        Spacer(Modifier.height(16.dp))
+        UpdateButton(step)
+        UpdateProgress(step)
+        return
+    }
+    Hint("Приложение проверяет релизы на GitHub раз в 6 часов и присылает уведомление, когда выходит новая версия.")
+    Spacer(Modifier.height(12.dp))
+    Pill(if (checking) "Проверяю…" else "Проверить обновления", VIcons.Sync) {
+        if (checking) return@Pill
+        checking = true
+        scope.launch {
+            when (Updates.check()) {
+                true -> Updates.sheet = true
+                false -> VolnaPlayer.say("У вас последняя версия")
+                null -> VolnaPlayer.say("Не удалось проверить: GitHub недоступен")
+            }
+            checking = false
+        }
+    }
+    if (step is UpdateStep.Failed) UpdateProgress(step)
 }
 
 /** Настройки интерфейса, которые читает App: фон. Обложки — в CoverStyle. */

@@ -78,6 +78,7 @@ import app.volna.ui.Sheet
 import app.volna.ui.TabBar
 import app.volna.ui.Topo
 import app.volna.ui.TrackActions
+import app.volna.ui.UpdateSheet
 import app.volna.ui.UiPrefs
 import app.volna.ui.VolnaTheme
 import app.volna.ui.WaveSettingsPanel
@@ -108,6 +109,7 @@ class MainActivity : ComponentActivity() {
                         if (Onboarding.show) OnboardingScreen { Onboarding.show = false }
                     }
                 }
+                if (Updates.sheet) UpdateSheet { Updates.sheet = false }
             }
         }
     }
@@ -117,8 +119,14 @@ class MainActivity : ComponentActivity() {
         takeShared(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        Updates.resume() // вернулись из настроек, где разрешили установку, — ставим обновление
+    }
+
     /** «Поделиться → Volna» из Spotify или Apple Music: откроем импорт с этой ссылкой. */
     private fun takeShared(intent: Intent?) {
+        if (intent?.action == Updates.ACTION) Updates.sheet = true // нажали на уведомление об обновлении
         if (intent?.action != Intent.ACTION_SEND) return
         val text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
         Shared.url = Regex("""https://\S+""").find(text)?.value
@@ -149,6 +157,9 @@ private fun VolnaRoot() {
         Offline.sync() // что держать скачанным: «Мне нравится», запас (не чаще раза в 6 часов)
         if (!Offline.isOnline) return@LaunchedEffect
         runCatching { VolnaPlayer.api.onboarding() }.onSuccess { if (!it.done) Onboarding.show = true }
+    }
+    LaunchedEffect(Unit) { // нашлась новая версия — предложим один раз, дальше она ждёт в «О приложении»
+        Updates.available.collect { if (it != null) Updates.offer() }
     }
     LaunchedEffect(Shared.url) {
         Shared.url?.let { nav.go(Screen.Import(it)) }

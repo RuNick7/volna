@@ -74,7 +74,7 @@ fun LyricsScreen(onClose: () -> Unit) {
                 if (track == null) {
                     Empty("Сейчас ничего не играет")
                 } else {
-                    val lyrics = load("lyrics", track.id) { VolnaPlayer.api.lyrics(track.id) }.value
+                    val lyrics = load("lyrics", track.id) { app.volna.player.Offline.lyrics(track.id) }.value
                     when {
                         lyrics is Load.Loading -> Loading()
                         lyrics is Load.Done && lyrics.value.lines.isNotEmpty() -> FullLyrics(lyrics.value, state.positionMs, state.durationMs)

@@ -30,7 +30,13 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import app.volna.BuildConfig
 import app.volna.VolnaApp
+import androidx.compose.foundation.layout.Row
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.media3.exoplayer.offline.Download
 import app.volna.data.ServerInfo
+import app.volna.player.Downloads
+import app.volna.player.Offline
 import app.volna.player.VolnaPlayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -56,6 +62,7 @@ fun SettingsScreen(nav: Navigator) {
                 Tile(VIcons.Server, "Сервер", serverSubtitle) { nav.go(Screen.SettingsPage("server")) }
                 Tile(VIcons.Wave, "Моя волна", "Характер, настроение, смелость подбора") { nav.go(Screen.SettingsPage("wave")) }
                 Tile(VIcons.Playback, "Воспроизведение", "Качество потока, что играть после альбома") { nav.go(Screen.SettingsPage("playback")) }
+                Tile(VIcons.Download, "Загрузки и офлайн", "«Мне нравится», запас, только по Wi‑Fi") { nav.go(Screen.SettingsPage("offline")) }
                 Tile(VIcons.Palette, "Интерфейс", "Фон, обложки") { nav.go(Screen.SettingsPage("interface")) }
                 Tile(
                     VIcons.Database,
@@ -72,6 +79,7 @@ fun SettingsScreen(nav: Navigator) {
 fun SettingsPage(key: String, nav: Navigator) {
     val title = mapOf(
         "service" to "Аккаунт", "server" to "Сервер", "wave" to "Моя волна", "playback" to "Воспроизведение",
+        "offline" to "Загрузки и офлайн",
         "interface" to "Интерфейс", "library" to "Библиотека и вкус", "about" to "О приложении",
     )[key].orEmpty()
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(horizontal = 16.dp)) {
@@ -90,6 +98,7 @@ fun SettingsPage(key: String, nav: Navigator) {
                         Hint("Снова выбрать любимых артистов и то, как вам слушается.")
                     }
                     "playback" -> PlaybackPage()
+                    "offline" -> OfflinePage(nav)
                     "interface" -> InterfacePage()
                     "library" -> LibraryPage()
                     "about" -> AboutPage()
@@ -113,10 +122,12 @@ private fun ServicePage() {
     Pill("Выйти") {
         scope.launch {
             VolnaPlayer.reset()
+            Downloads.clear() // как в Spotify: скачанное принадлежит аккаунту
+            Offline.forget()
             app.api.logout()
         }
     }
-    Hint("Чтобы подключиться к другому серверу, выйдите и введите его адрес.")
+    Hint("Чтобы подключиться к другому серверу, выйдите и введите его адрес. Скачанное при выходе удаляется с телефона.")
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -296,6 +307,92 @@ private fun InterfacePage() {
         color = !it
         app.prefs.colorCovers = !it
         CoverStyle.color = !it
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OfflinePage(nav: Navigator) {
+    val prefs = (LocalContext.current.applicationContext as VolnaApp).prefs
+    val forced by Offline.forced.collectAsState()
+    val saved by Downloads.saved.collectAsState()
+    val states by Downloads.states.collectAsState()
+    var liked by remember { mutableStateOf(prefs.offlineLiked) }
+    var reserve by remember { mutableIntStateOf(prefs.reserve) }
+    var wifi by remember { mutableStateOf(prefs.wifiOnly) }
+    var quality by remember { mutableStateOf(prefs.downloadQuality) }
+    var confirm by remember { mutableStateOf(false) }
+
+    GroupLabel("Без сети")
+    ToggleRow("Офлайн-режим", forced) { Offline.setForced(it) }
+    Hint("Играет только скачанное, даже когда сеть есть: не тратит трафик. Если связь пропала, приложение переходит на скачанное само.")
+    Spacer(Modifier.height(24.dp))
+
+    GroupLabel("Что скачивать")
+    ToggleRow("Скачивать «Мне нравится»", liked) {
+        liked = it
+        Offline.setLikedDownloads(it)
+    }
+    Hint("Все лайкнутые треки, а новые — сразу после лайка.")
+    Spacer(Modifier.height(12.dp))
+    Text("Запас на случай без сети", style = MaterialTheme.typography.bodyLarge)
+    Spacer(Modifier.height(8.dp))
+    Chips(listOf("0" to "Выкл", "50" to "50 треков", "100" to "100", "250" to "250", "500" to "500"), reserve.toString()) {
+        reserve = it.toInt()
+        Offline.setReserve(reserve)
+    }
+    Hint("Как в Spotify: то, что вы часто и недавно слушаете, скачивается само и обновляется несколько раз в день. Без сети волна играет из него.")
+    Spacer(Modifier.height(24.dp))
+
+    GroupLabel("Как скачивать")
+    ToggleRow("Только по Wi‑Fi", wifi) {
+        wifi = it
+        Downloads.setWifiOnly(it)
+    }
+    Spacer(Modifier.height(12.dp))
+    Text("Качество загрузок", style = MaterialTheme.typography.bodyLarge)
+    Spacer(Modifier.height(8.dp))
+    Chips(listOf("original" to "оригинал", "320" to "320 кбит/с", "192" to "192 кбит/с", "128" to "128 кбит/с"), quality) {
+        quality = it
+        prefs.downloadQuality = it
+    }
+    Hint("Для новых загрузок. Чем ниже, тем меньше места на телефоне.")
+    Spacer(Modifier.height(24.dp))
+
+    GroupLabel("На телефоне")
+    val done = saved.keys.count { states[it] == Download.STATE_COMPLETED }
+    Text(
+        "$done ${plural(done, "трек", "трека", "треков")} · ${formatBytes(Downloads.bytes())}",
+        style = MaterialTheme.typography.bodyMedium,
+    )
+    val blocked by Downloads.blocked.collectAsState()
+    if (saved.size > done) Hint("Ещё ${saved.size - done} ${blocked ?: "качается"}")
+    Spacer(Modifier.height(12.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Pill("Скачанное", VIcons.Download) { nav.go(Screen.Downloaded) }
+        Pill("Обновить сейчас", VIcons.Sync) {
+            Offline.sync(force = true)
+            VolnaPlayer.say(if (Offline.isOnline) "Сверяю загрузки с сервером" else Offline.NO_NETWORK)
+        }
+        if (saved.isNotEmpty() && !confirm) Pill("Удалить все загрузки") { confirm = true }
+    }
+    if (confirm) {
+        Spacer(Modifier.height(16.dp))
+        Text("Удалить с телефона ${saved.size} ${plural(saved.size, "трек", "трека", "треков")}?", style = MaterialTheme.typography.bodyLarge)
+        Hint("Загрузка «Мне нравится» и запас тоже выключатся, иначе они скачаются снова.")
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Pill("Удалить", primary = true) {
+                liked = false
+                reserve = 0
+                prefs.offlineLiked = false
+                prefs.reserve = 0
+                Downloads.clear()
+                confirm = false
+                VolnaPlayer.say("Загрузки удалены")
+            }
+            Pill("Отмена") { confirm = false }
+        }
     }
 }
 

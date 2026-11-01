@@ -1,6 +1,7 @@
 package app.volna.ui
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -17,7 +18,8 @@ object VIcons {
         val builder = ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f)
         paths.forEachIndexed { i, d ->
             if (i in filled) {
-                builder.addPath(addPathNodes(d), fill = SolidColor(Color.White))
+                // even-odd: контур внутри залитого — прорезь (стрелка в кружке «Скачано»)
+                builder.addPath(addPathNodes(d), fill = SolidColor(Color.White), pathFillType = PathFillType.EvenOdd)
             } else {
                 builder.addPath(
                     addPathNodes(d),
@@ -74,5 +76,8 @@ object VIcons {
     val Lyrics = icon("lyrics", "M4 6h12M4 10h12M4 14h7", "M17 18.5V12l3-1", circle(15.5f, 18.5f, 1.5f))
     val Mix = icon("mix", "M4 6h12M4 11h12M4 16h7", "M17 14v6M14 17h6")
     val Sync = icon("sync", "M20 12a8 8 0 0 1-14 5.3M4 12a8 8 0 0 1 14-5.3", "M18 3v4h-4M6 21v-4h4")
+    val Download = icon("download", "M12 4v11M7.5 10.5l4.5 4.5 4.5-4.5", "M5 19.5h14")
+    val Downloaded = icon("downloaded", circle(12f, 12f, 9f) + "M11 6.5h2v5.5h2.8L12 16.2 8.2 12H11z", filled = setOf(0))
+    val Offline = icon("offline", "M7 18h10a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.1 9.2 4.5 4.5 0 0 0 7 18z", "M4 4l16 16")
     val Phone = icon("phone", "M8 3h8a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z", "M11 18h2")
 }

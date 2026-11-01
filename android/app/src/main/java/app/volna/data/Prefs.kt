@@ -50,6 +50,38 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("lyrics", false)
         set(value) = prefs.edit().putBoolean("lyrics", value).apply()
 
+    // --- загрузки и офлайн ---
+
+    /** Скачивать только по Wi‑Fi (сеть без оплаты за трафик). */
+    var wifiOnly: Boolean
+        get() = prefs.getBoolean("offline_wifi_only", true)
+        set(value) = prefs.edit().putBoolean("offline_wifi_only", value).apply()
+
+    /** Держать скачанными все треки из «Мне нравится». */
+    var offlineLiked: Boolean
+        get() = prefs.getBoolean("offline_liked", false)
+        set(value) = prefs.edit().putBoolean("offline_liked", value).apply()
+
+    /** Запас на случай без сети: сколько часто и недавно слушаемых треков держать скачанными (0 — не держать). */
+    var reserve: Int
+        get() = prefs.getInt("offline_reserve", 50)
+        set(value) = prefs.edit().putInt("offline_reserve", value).apply()
+
+    /** Качество загрузок: original | 320 | 192 | 128. */
+    var downloadQuality: String
+        get() = prefs.getString("offline_quality", "original") ?: "original"
+        set(value) = prefs.edit().putString("offline_quality", value).apply()
+
+    /** Офлайн-режим, включённый вручную: играет только скачанное, даже когда сеть есть. */
+    var forceOffline: Boolean
+        get() = prefs.getBoolean("offline_forced", false)
+        set(value) = prefs.edit().putBoolean("offline_forced", value).apply()
+
+    /** Когда последний раз сверяли с сервисом «Мне нравится», запас и скачанные альбомы. */
+    var offlineSynced: Long
+        get() = prefs.getLong("offline_synced", 0)
+        set(value) = prefs.edit().putLong("offline_synced", value).apply()
+
     companion object {
         const val DEFAULT_URL = "http://10.0.2.2:8765"
     }

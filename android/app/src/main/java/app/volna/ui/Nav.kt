@@ -22,6 +22,7 @@ sealed interface Screen {
     data object Queue : Screen
     data class Import(val url: String = "") : Screen // плейлист из Spotify или Apple Music по ссылке
     data object AddArtist : Screen // исполнитель из MusicBrainz на докачку через Lidarr
+    data object Downloaded : Screen // скачанное для прослушивания без сети
 }
 
 private fun Screen.tab(): String? = when (this) {

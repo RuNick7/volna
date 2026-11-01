@@ -23,6 +23,9 @@ class VolnaApi(val prefs: Prefs) {
     /** Нужно войти: входа ещё не было или сервис перестал принимать токен. */
     val needLogin = MutableStateFlow(!prefs.connected)
 
+    /** Сервис отвечает. false — последний запрос не дошёл до сервера: нет сети или сервер недоступен. */
+    val reachable = MutableStateFlow(true)
+
     /** Один клиент на всё: запросы, звук и обложки уходят в сервис с токеном входа. */
     val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
@@ -31,9 +34,15 @@ class VolnaApi(val prefs: Prefs) {
             val request = chain.request()
             val ours = request.url.toString().startsWith(base) // токен не уходит на чужие адреса
             val token = prefs.token
-            val response = chain.proceed(
-                if (ours && token.isNotEmpty()) request.newBuilder().header("Authorization", "Bearer $token").build() else request,
-            )
+            val response = try {
+                chain.proceed(
+                    if (ours && token.isNotEmpty()) request.newBuilder().header("Authorization", "Bearer $token").build() else request,
+                )
+            } catch (e: IOException) {
+                if (ours && unreachable(e)) reachable.value = false
+                throw e
+            }
+            if (ours) reachable.value = true
             if (ours && response.code == 401 && "/api/auth/" !in request.url.encodedPath) needLogin.value = true
             response
         }
@@ -173,13 +182,15 @@ class VolnaApi(val prefs: Prefs) {
 
     // --- сигналы вне волны ---
 
-    suspend fun event(trackId: String, outcome: String, position: Double, duration: Double, contextType: String, contextId: String) {
-        post(
-            "/api/events",
-            JSONObject().put("track_id", trackId).put("outcome", outcome).put("position", position)
-                .put("duration", duration).put("context_type", contextType).put("context_id", contextId)
-                .put("device", "android"),
-        )
+    /** at — когда слушали (секунды Unix), если событие копилось без сети. */
+    suspend fun event(
+        trackId: String, outcome: String, position: Double, duration: Double, contextType: String, contextId: String, at: Double? = null,
+    ) {
+        val body = JSONObject().put("track_id", trackId).put("outcome", outcome).put("position", position)
+            .put("duration", duration).put("context_type", contextType).put("context_id", contextId)
+            .put("device", "android")
+        if (at != null) body.put("at", at)
+        post("/api/events", body)
     }
 
     suspend fun like(type: String, id: String, liked: Boolean) {
@@ -199,9 +210,15 @@ class VolnaApi(val prefs: Prefs) {
     suspend fun playlists() = Item.list(get("/api/library/playlists").optJSONArray("items"))
     suspend fun liked() = Track.list(get("/api/library/liked").optJSONArray("tracks"))
     suspend fun recent() = Track.list(get("/api/library/recent").optJSONArray("tracks"))
+    /** Запас на случай без сети: что вы часто и недавно слушаете. */
+    suspend fun reserve(limit: Int) = Track.list(get("/api/library/reserve?limit=$limit").optJSONArray("tracks"))
+
+    /** Адрес для загрузки трека: с качеством из настроек загрузок, а не потока. */
+    fun downloadUrl(track: Track, quality: String): String = url(track.stream) + "?quality=" + q(quality)
     suspend fun page(type: String, id: String) = Page.from(get("/api/$type/${q(id)}"))
     suspend fun search(query: String) = SearchResult.from(get("/api/search?q=${q(query)}"))
-    suspend fun lyrics(trackId: String) = Lyrics.from(get("/api/lyrics/${q(trackId)}"))
+    suspend fun lyrics(trackId: String) = Lyrics.from(lyricsJson(trackId))
+    suspend fun lyricsJson(trackId: String): JSONObject = get("/api/lyrics/${q(trackId)}")
     suspend fun imports() = Imports.from(get("/api/imports"))
     suspend fun likeTracks(trackIds: List<String>, liked: Boolean = true): JSONObject =
         post("/api/like/tracks", JSONObject().put("track_ids", JSONArray(trackIds)).put("liked", liked))
@@ -225,6 +242,10 @@ class VolnaApi(val prefs: Prefs) {
 
     companion object {
         private val JSON = "application/json".toMediaType()
+
+        /** Запрос не дошёл до сервера: нет сети, сервер выключен или не отвечает. Отменённые запросы не считаются. */
+        fun unreachable(e: IOException): Boolean = e is UnknownHostException || e is java.net.ConnectException ||
+            e is java.net.NoRouteToHostException || (e is SocketTimeoutException && e.message.orEmpty().contains("connect"))
 
         /** Где искать сервис: рядом с Navidrome по пути /volna, в корне или на своём компьютере. */
         fun candidates(address: String): List<String> {

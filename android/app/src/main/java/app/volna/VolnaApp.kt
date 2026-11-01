@@ -3,6 +3,8 @@ package app.volna
 import android.app.Application
 import app.volna.data.Prefs
 import app.volna.data.VolnaApi
+import app.volna.player.Downloads
+import app.volna.player.Offline
 import app.volna.player.VolnaPlayer
 import coil3.ImageLoader
 import coil3.PlatformContext
@@ -19,6 +21,8 @@ class VolnaApp : Application(), SingletonImageLoader.Factory {
         super.onCreate()
         prefs = Prefs(this)
         api = VolnaApi(prefs)
+        Downloads.init(this, api, prefs) // до плеера: он читает скачанное из кэша загрузок
+        Offline.init(this, api, prefs)
         VolnaPlayer.init(this, api)
     }
 

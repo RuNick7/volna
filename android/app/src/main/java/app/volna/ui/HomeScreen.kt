@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import app.volna.data.Lyrics
 import app.volna.data.Track
+import app.volna.player.Offline
 import app.volna.player.PlayContext
 import app.volna.player.PlayerState
 import app.volna.player.VolnaPlayer
@@ -59,7 +60,8 @@ import coil3.compose.AsyncImage
 @Composable
 fun HomeScreen(nav: Navigator, onMore: (Track) -> Unit, onTune: () -> Unit) {
     val state by VolnaPlayer.state.collectAsState()
-    val shelves = load("home") { VolnaPlayer.api.home() }
+    val online by Offline.online.collectAsState()
+    val shelves = load("home", online) { Offline.home() }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val heroHeight = maxHeight
@@ -67,7 +69,10 @@ fun HomeScreen(nav: Navigator, onMore: (Track) -> Unit, onTune: () -> Unit) {
             item { Hero(state, nav, Modifier.height(heroHeight), onMore, onTune) }
             when (val s = shelves.value) {
                 Load.Loading -> item { Loading() }
-                is Load.Failed -> item { Empty("Полки недоступны: ${s.message}") }
+                is Load.Failed -> item {
+                    if (online) Empty("Полки недоступны: ${s.message}")
+                    else Empty("Нет связи с сервером. Моя волна играет из скачанного, всё скачанное — в «Коллекция → Скачанное».")
+                }
                 is Load.Done -> items(s.value, key = { it.id }) { shelf ->
                     if (shelf.tracks.isNotEmpty()) {
                         SectionTitle(shelf.title)
@@ -94,7 +99,7 @@ fun HomeScreen(nav: Navigator, onMore: (Track) -> Unit, onTune: () -> Unit) {
 @Composable
 private fun Hero(state: PlayerState, nav: Navigator, modifier: Modifier, onMore: (Track) -> Unit, onTune: () -> Unit) {
     val track = state.track
-    val lyrics = if (track != null && UiPrefs.lyrics) load("lyrics", track.id) { VolnaPlayer.api.lyrics(track.id) }.value else null
+    val lyrics = if (track != null && UiPrefs.lyrics) load("lyrics", track.id) { Offline.lyrics(track.id) }.value else null
     val text = (lyrics as? Load.Done)?.value?.takeIf { it.lines.isNotEmpty() }
     Column(
         modifier.fillMaxWidth().statusBarsPadding(),
@@ -166,7 +171,9 @@ private fun Hero(state: PlayerState, nav: Navigator, modifier: Modifier, onMore:
                     if (UiPrefs.lyrics && (lyrics as? Load.Done)?.value?.lines?.isEmpty() == true) VolnaPlayer.say("У этого трека нет текста")
                 }
             }
-            if (track != null && state.mode == "list") {
+            if (track != null && state.offline) {
+                Pill("Скачанное", VIcons.Download) { nav.go(Screen.Downloaded) }
+            } else if (track != null && state.mode == "list") {
                 Pill("Включить Мою волну", VIcons.Wave) { VolnaPlayer.startWave() }
             } else {
                 val steered = state.mode == "wave" && state.kind == "steer" && state.title.isNotEmpty()

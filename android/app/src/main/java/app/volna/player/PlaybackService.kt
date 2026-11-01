@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
 import androidx.media3.datasource.DataSourceBitmapLoader
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
@@ -72,8 +73,11 @@ class PlaybackService : MediaSessionService() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        // обложку для шторки и экрана блокировки грузим тем же клиентом, что и всё остальное: с токеном
-        val covers = DataSourceBitmapLoader.Builder(this).setDataSourceFactory(OkHttpDataSource.Factory(VolnaPlayer.api.client)).build()
+        // обложку для шторки и экрана блокировки грузим тем же клиентом, что и всё остальное: с токеном,
+        // а у скачанных треков — из файла на телефоне
+        val covers = DataSourceBitmapLoader.Builder(this)
+            .setDataSourceFactory(DefaultDataSource.Factory(this, OkHttpDataSource.Factory(VolnaPlayer.api.client)))
+            .build()
         session = MediaSession.Builder(this, player).setSessionActivity(openApp).setBitmapLoader(covers).setCallback(callback).build()
         // сердечко в уведомлении следует за лайком, откуда бы его ни поставили
         scope.launch {

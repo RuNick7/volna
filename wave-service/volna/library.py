@@ -184,6 +184,28 @@ class LibraryIndex:
         played = [t for t in self.snapshot.songs if t.last_played]
         return sorted(played, key=lambda t: -(t.last_played or 0))[:limit]
 
+    def reserve_tracks(self, limit: int, events: list = (), now: float | None = None) -> list[Track]:
+        """Запас для офлайна, как у Spotify: что вы слушаете часто и недавно.
+
+        Прослушивания из Navidrome весят тем меньше, чем давнее последнее (полураспад 30 дней);
+        дослушивания в волне добавляют, ранние пропуски убавляют. Лишние копии и треки с 1★ —
+        мимо: в запасе каждая песня один раз.
+        """
+        now = now or time.time()
+        score: Counter[str] = Counter()
+        for t in self.snapshot.songs:
+            if t.play_count and t.last_played:
+                score[t.id] += t.play_count * 0.5 ** ((now - t.last_played) / (30 * DAY))
+            if t.starred:
+                score[t.id] += 0.5
+        for e in events:
+            if getattr(e, "entity", "track") != "track":
+                continue
+            weight = 0.5 ** ((now - e.ts) / (30 * DAY))
+            score[e.track_id] += {"complete": 1.0, "like": 2.0, "early_skip": -1.0, "dislike": -5.0}.get(e.kind, 0.0) * weight
+        picked = [self.songs[i] for i, s in score.most_common() if s > 0 and i in self.songs]
+        return [t for t in picked if t.id not in self.copies and t.rating != 1][:limit]
+
     def forgotten_tracks(self, limit: int = 20) -> list[Track]:
         """Отмеченное или заслушанное раньше, что давно не звучало (как «Тайник» у Яндекса)."""
         now = time.time()

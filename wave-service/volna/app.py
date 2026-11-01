@@ -47,6 +47,7 @@ PREFS_KEY = "preferences"
 USERS_KEY = "users"  # кто входил: логин, пароль Navidrome и администратор ли он
 QUALITY = {"original": 0, "320": 320, "192": 192, "128": 128}
 DEFAULT_PREFS = {"quality": "original", "continue_after_end": True}
+OFFLINE_DAYS = 30  # прослушивания без сети старше этого считаем сегодняшними
 
 
 class Seed(BaseModel):
@@ -88,6 +89,7 @@ class PlaybackEvent(BaseModel):
     context_type: Literal["album", "playlist", "artist", "search", "library", "queue", "other"] = "other"
     context_id: str = ""
     device: str = ""
+    at: float | None = None  # когда слушали: события, накопленные без сети, приходят позже
 
 
 class ContinueRequest(BaseModel):
@@ -1009,9 +1011,11 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
             taste = None if isinstance(sp.deps.sim, NoSimilarity) else sp.profiles.get()
         except Exception:  # noqa: BLE001 — профиля нет, но событие и скроббл всё равно сохраняем
             taste = None
+        now = time.time()
         register_playback(
             sp.deps, taste, body.track_id, kind, track=track, position=body.position, duration=body.duration,
             context_type=body.context_type, context_id=body.context_id, device=body.device,
+            ts=min(now, max(now - OFFLINE_DAYS * 86400, body.at)) if body.at else now,
         )
         sp.profiles.note_event()
         return {"kind": kind}
@@ -1076,6 +1080,12 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
     @app.get("/api/library/liked")
     def library_liked(sp: Space = Depends(current_space)) -> dict:
         return {"tracks": [track_json(t) for t in index_or_503(sp).liked_tracks()]}
+
+    @app.get("/api/library/reserve")
+    def library_reserve(limit: int = 100, sp: Space = Depends(current_space)) -> dict:
+        """Что держать скачанным на случай без сети: часто и недавно слушаемое."""
+        events = sp.store.events(since=time.time() - 120 * 86400)
+        return {"tracks": [track_json(t) for t in index_or_503(sp).reserve_tracks(min(max(limit, 0), 1000), events)]}
 
     @app.get("/api/library/recent")
     def library_recent(sp: Space = Depends(current_space)) -> dict:
@@ -1156,8 +1166,9 @@ def create_app(settings: Settings | None = None, deps: Deps | None = None) -> Fa
             return {"synced": False, "lines": []}
 
     @app.get("/api/stream/{track_id}")
-    def stream(track_id: str, request: Request, sp: Space = Depends(current_space)):
-        bitrate = QUALITY.get(sp.preferences()["quality"], 0)
+    def stream(track_id: str, request: Request, quality: str = "", sp: Space = Depends(current_space)):
+        """Поток трека; quality — для загрузок, у которых в приложении своё качество."""
+        bitrate = QUALITY.get(quality if quality in QUALITY else sp.preferences()["quality"], 0)
         media = sp.deps.library.stream(track_id, request.headers.get("range"), max_bitrate=bitrate)
         return StreamingResponse(
             iter(media.body),

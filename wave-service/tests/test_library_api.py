@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import pytest
 from fastapi.testclient import TestClient
 
@@ -107,6 +108,14 @@ def test_library_works_without_audiomuse(tmp_path):
                                             "duration": track["duration"], "context_type": "album"}).json()["kind"]
     assert kind == "complete" and store.count_events() == 1
 
+    # прослушивание без сети приходит позже, со временем, когда слушали; слишком старое — сегодняшнее
+    now = time.time()
+    for at in (now - 3600, now - 90 * 86400, now + 3600):
+        client.post("/api/events", json={"track_id": track["id"], "outcome": "complete", "duration": track["duration"], "at": at})
+    oldest, hour_ago, *today = sorted(e.ts for e in store.events())
+    assert abs(oldest - (now - 30 * 86400)) < 60 and abs(hour_ago - (now - 3600)) < 1
+    assert len(today) == 2 and all(now - 60 < t <= time.time() for t in today)
+
 
 def test_normalize_url():
     assert normalize_url(" music.example.com/ ") == "https://music.example.com"
@@ -173,3 +182,11 @@ def test_like_all_tracks_of_a_playlist(client):
     assert all(t["liked"] for t in client.get(f"/api/album/{album['id']}").json()["tracks"])
     liked = {t["id"] for t in client.get("/api/library/liked").json()["tracks"]}
     assert set(ids) <= liked
+
+
+def test_offline_reserve_prefers_often_and_recently_played(client):
+    reserve = client.get("/api/library/reserve?limit=20").json()["tracks"]
+    assert 0 < len(reserve) <= 20 and len({t["id"] for t in reserve}) == len(reserve)
+    recent = client.get("/api/library/recent").json()["tracks"]
+    assert {t["id"] for t in recent[:5]} & {t["id"] for t in reserve}  # недавно слушанное — в запасе
+    assert client.get("/api/library/reserve?limit=0").json()["tracks"] == []

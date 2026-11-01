@@ -44,11 +44,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.media3.exoplayer.offline.Download
 import app.volna.data.Discography
+import app.volna.data.Item
 import app.volna.data.Mix
 import app.volna.data.Page
 import app.volna.data.SearchResult
 import app.volna.data.Track
+import app.volna.player.Downloads
+import app.volna.player.Offline
 import app.volna.player.PlayContext
 import app.volna.player.VolnaPlayer
 import kotlinx.coroutines.delay
@@ -85,7 +89,7 @@ fun SearchScreen(nav: Navigator, onMore: (Track) -> Unit) {
         }
         delay(250)
         try {
-            result = VolnaPlayer.api.search(query.trim())
+            result = Offline.search(query.trim()) // без сети ищет в скачанном
             error = null
         } catch (e: java.io.IOException) {
             error = e.message
@@ -132,14 +136,25 @@ fun SearchScreen(nav: Navigator, onMore: (Track) -> Unit) {
 
 @Composable
 fun LibraryScreen(nav: Navigator) {
-    val stats = load("library-stats") { VolnaPlayer.api.libraryStats() }
-    val newest = load("library-newest") { VolnaPlayer.api.albums("newest").take(12) }
+    val online by Offline.online.collectAsState()
+    val saved by Downloads.saved.collectAsState()
+    val states by Downloads.states.collectAsState()
+    val stats = load("library-stats", online) { VolnaPlayer.api.libraryStats() }
+    val newest = load("library-newest", online) { if (online) VolnaPlayer.api.albums("newest").take(12) else Downloads.albums().take(12) }
     val counts = (stats.value as? Load.Done)?.value
+    val downloaded = saved.keys.count { states[it] == Download.STATE_COMPLETED }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(horizontal = 16.dp)) {
         item { PageHeader("Коллекция") }
+        if (!online) item { Hint("Нет связи с сервером: играет и находится только скачанное.", Modifier.padding(bottom = 8.dp)) }
         item {
             Column {
                 Tile(VIcons.Heart, "Мне нравится", count = counts?.optInt("liked")?.toString().orEmpty()) { nav.go(Screen.LibraryList("liked")) }
+                Tile(
+                    VIcons.Download,
+                    "Скачанное",
+                    if (saved.isEmpty()) "Музыка для прослушивания без сети" else "${formatBytes(Downloads.bytes())} на телефоне",
+                    count = if (saved.isEmpty()) "" else downloaded.toString(),
+                ) { nav.go(Screen.Downloaded) }
                 Tile(VIcons.Playlist, "Плейлисты", count = counts?.optInt("playlists")?.toString().orEmpty()) { nav.go(Screen.LibraryList("playlists")) }
                 Tile(VIcons.Album, "Альбомы", count = counts?.optInt("albums")?.toString().orEmpty()) { nav.go(Screen.LibraryList("albums")) }
                 Tile(VIcons.Artist, "Артисты", count = counts?.optInt("artists")?.toString().orEmpty()) { nav.go(Screen.LibraryList("artists")) }
@@ -148,7 +163,7 @@ fun LibraryScreen(nav: Navigator) {
                 Tile(VIcons.Artist, "Добавить исполнителя", "Скачать дискографию через Lidarr") { nav.go(Screen.AddArtist) }
             }
         }
-        item { SectionTitle("Недавно добавлены") }
+        item { SectionTitle(if (online) "Недавно добавлены" else "Скачанные альбомы") }
         item {
             when (val s = newest.value) {
                 Load.Loading -> Loading()
@@ -175,7 +190,7 @@ fun LibraryListScreen(kind: String, nav: Navigator, onMore: (Track) -> Unit) {
 private fun TrackListScreen(kind: String, nav: Navigator, onMore: (Track) -> Unit) {
     val title = if (kind == "liked") "Мне нравится" else "Недавно слушали"
     val playing by VolnaPlayer.state.collectAsState()
-    val tracks = load(kind) { if (kind == "liked") VolnaPlayer.api.liked() else VolnaPlayer.api.recent() }
+    val tracks = load(kind) { if (kind == "liked") Offline.liked() else VolnaPlayer.api.recent() }
     var query by rememberSaveable(kind) { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(horizontal = 16.dp)) {
         item { PageHeader(title) { nav.back() } }
@@ -188,7 +203,7 @@ private fun TrackListScreen(kind: String, nav: Navigator, onMore: (Track) -> Uni
                 val context = PlayContext("library", kind, title)
                 if (s.value.isEmpty()) item { Empty(if (kind == "liked") "Отмечайте треки сердцем — они соберутся здесь." else "История пока пуста.") }
                 else if (list.isEmpty()) item { Empty("Ничего не нашлось.") }
-                else item { PlayActions(list, context) }
+                else item { PlayActions(list, context) { if (kind == "liked") LikedDownloadPill(s.value) } }
                 itemsIndexed(list, key = { _, t -> t.id }) { i, track ->
                     TrackRow(track, playing.track?.id == track.id, onMore = onMore) { VolnaPlayer.playList(list, i, context) }
                 }
@@ -264,7 +279,7 @@ fun PlayActions(tracks: List<Track>, context: PlayContext, extra: @Composable ()
 @Composable
 fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Unit) {
     val playing by VolnaPlayer.state.collectAsState()
-    val page = load(type, id) { VolnaPlayer.api.page(type, id) }
+    val page = load(type, id) { Offline.page(type, id) } // без сети — из скачанного
     var liked by remember(type, id) { mutableStateOf<Boolean?>(null) }
     var allTracks by rememberSaveable(type, id) { mutableStateOf(false) }
     var allAlbums by rememberSaveable(type, id) { mutableStateOf(false) }
@@ -302,11 +317,15 @@ fun EntityScreen(type: String, id: String, nav: Navigator, onMore: (Track) -> Un
                                     allLiked = true // сердечки сразу, Navidrome — следом
                                     scope.launch {
                                         runCatching { VolnaPlayer.api.likeTracks(tracks.map { it.id }) }
-                                            .onSuccess { VolnaPlayer.say("Все ${tracks.size} ${plural(tracks.size, "трек", "трека", "треков")} в «Мне нравится»") }
+                                            .onSuccess {
+                                                Downloads.liked(tracks, true)
+                                                VolnaPlayer.say("Все ${tracks.size} ${plural(tracks.size, "трек", "трека", "треков")} в «Мне нравится»")
+                                            }
                                             .onFailure { allLiked = false; VolnaPlayer.say(it.message ?: "Не удалось отметить треки") }
                                     }
                                 }
                             }
+                            DownloadPill(p.item, tracks)
                             if (type == "album") {
                                 LikePill(isLiked) {
                                     liked = !isLiked
@@ -390,9 +409,52 @@ private fun ShowMore(expanded: Boolean, label: String, onClick: () -> Unit) {
     }
 }
 
+/** Скачать альбом или плейлист целиком; потом — сколько уже на телефоне, нажатие удаляет. */
+@Composable
+private fun DownloadPill(item: Item, tracks: List<Track>) {
+    val lists by Downloads.lists.collectAsState()
+    val states by Downloads.states.collectAsState()
+    if (tracks.isEmpty()) return
+    if ("${item.type}:${item.id}" !in lists) {
+        Pill("Скачать", VIcons.Download) {
+            Downloads.saveList(item, tracks)
+            VolnaPlayer.say(Downloads.queued(item.title))
+        }
+        return
+    }
+    val done = tracks.count { states[it.id] == Download.STATE_COMPLETED }
+    Pill(if (done >= tracks.size) "Скачано" else "Скачано $done из ${tracks.size}", VIcons.Downloaded) {
+        Downloads.removeList(item.type, item.id)
+        VolnaPlayer.say("«${item.title}» удалён с телефона")
+    }
+}
+
+/** «Мне нравится»: включить загрузку всех лайков — и новые будут качаться сами. */
+@Composable
+private fun LikedDownloadPill(liked: List<Track>) {
+    val saved by Downloads.saved.collectAsState()
+    val states by Downloads.states.collectAsState()
+    var on by remember { mutableStateOf(Offline.likedDownloads) }
+    if (!on) {
+        Pill("Скачать", VIcons.Download) {
+            on = true
+            Offline.setLikedDownloads(true, liked)
+            VolnaPlayer.say("«Мне нравится» скачивается, новые лайки тоже будут скачиваться")
+        }
+        return
+    }
+    val mine = saved.values.filter { Downloads.LIKED in it.reasons }
+    val done = mine.count { states[it.track.id] == Download.STATE_COMPLETED }
+    Pill(if (done >= mine.size) "Скачано" else "Скачано $done из ${mine.size}", VIcons.Downloaded) {
+        on = false
+        Offline.setLikedDownloads(false)
+        VolnaPlayer.say("«Мне нравится» больше не скачивается")
+    }
+}
+
 /** Поиск внутри раздела коллекции: фильтрует то, что уже загружено, сразу при вводе. */
 @Composable
-private fun FilterField(query: String, placeholder: String, onChange: (String) -> Unit) {
+fun FilterField(query: String, placeholder: String, onChange: (String) -> Unit) {
     OutlinedTextField(
         value = query,
         onValueChange = onChange,
@@ -407,7 +469,7 @@ private fun FilterField(query: String, placeholder: String, onChange: (String) -
     )
 }
 
-private fun matches(query: String, vararg fields: String): Boolean {
+fun matches(query: String, vararg fields: String): Boolean {
     val q = query.trim().lowercase().replace('ё', 'е')
     return q.isEmpty() || fields.any { it.lowercase().replace('ё', 'е').contains(q) }
 }

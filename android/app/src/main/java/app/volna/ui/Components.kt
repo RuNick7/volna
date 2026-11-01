@@ -72,8 +72,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.draw.alpha
+import androidx.media3.exoplayer.offline.Download
+import app.volna.data.ApiException
 import app.volna.data.Item
 import app.volna.data.Track
+import app.volna.player.Downloads
+import app.volna.player.Offline
 import app.volna.player.VolnaPlayer
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.MainScope
@@ -99,7 +104,7 @@ fun Cover(url: String, modifier: Modifier = Modifier, round: Boolean = false, co
     ) {
         if (url.isNotEmpty()) {
             AsyncImage(
-                model = VolnaPlayer.api.url(url),
+                model = Downloads.cover(url) ?: VolnaPlayer.api.url(url), // скачанная обложка — из файла, и без сети
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 colorFilter = if (CoverStyle.color) null else CoverStyle.grayscale,
@@ -419,8 +424,14 @@ private fun TrackRowContent(
     onPlay: () -> Unit,
     modifier: Modifier,
 ) {
+    val states by Downloads.states.collectAsState()
+    val online by Offline.online.collectAsState()
+    val download = states[track.id]
+    val available = online || download == Download.STATE_COMPLETED // без сети играет только скачанное
     Row(
-        modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClick = onPlay).padding(vertical = 6.dp),
+        modifier.fillMaxWidth().alpha(if (available) 1f else 0.4f).clip(RoundedCornerShape(10.dp))
+            .clickable { if (available) onPlay() else VolnaPlayer.say(Offline.NOT_DOWNLOADED) }
+            .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -441,9 +452,30 @@ private fun TrackRowContent(
             }
         }
         if (track.liked) VIcon(VIcons.HeartFilled, "Нравится", 16.dp, Palette.Muted)
+        DownloadMark(download)
         Text(formatDuration(track.duration), style = MaterialTheme.typography.bodySmall, color = Palette.Muted)
         IconButtonV(VIcons.More, "Действия: ${track.title}", 36.dp) { onMore(track) }
     }
+}
+
+/** Значок у строки трека: скачан, качается или ждёт Wi‑Fi. */
+@Composable
+fun DownloadMark(state: Int?) {
+    val blocked by Downloads.blocked.collectAsState()
+    when (state) {
+        Download.STATE_COMPLETED -> VIcon(VIcons.Downloaded, "Скачан", 16.dp, Palette.Fg)
+        Download.STATE_QUEUED, Download.STATE_DOWNLOADING, Download.STATE_RESTARTING, Download.STATE_STOPPED ->
+            if (blocked != null) VIcon(VIcons.Download, blocked, 16.dp, Palette.Muted)
+            else CircularProgressIndicator(Modifier.size(13.dp), color = Palette.Muted, strokeWidth = 1.5.dp)
+        else -> {}
+    }
+}
+
+/** «1,2 ГБ», «340 МБ» — сколько места занимают загрузки. */
+fun formatBytes(bytes: Long): String = when {
+    bytes >= 1L shl 30 -> String.format(Locale.forLanguageTag("ru"), "%.1f ГБ", bytes / (1L shl 30).toDouble())
+    bytes >= 1L shl 20 -> "${bytes shr 20} МБ"
+    else -> "${(bytes shr 10).coerceAtLeast(0)} КБ"
 }
 
 @Composable
@@ -616,6 +648,22 @@ fun TrackActions(track: Track, onDismiss: () -> Unit, navigate: (Screen) -> Unit
         Tile(VIcons.Wave, "Моя волна по треку") { act { VolnaPlayer.startWave("track", track.id); navigate(Screen.Home) } }
         Tile(VIcons.Mix, "Собрать плейлист по треку") { act { navigate(Screen.Mix("track", track.id)) } }
         Tile(VIcons.Heart, if (track.liked) "Убрать из «Мне нравится»" else "Нравится") { act { likeTrack(track) } }
+        val saved by Downloads.saved.collectAsState()
+        if (track.id in saved) {
+            Tile(VIcons.Downloaded, "Удалить из загрузок") {
+                act {
+                    Downloads.drop(listOf(track.id))
+                    VolnaPlayer.say("«${track.title}» удалён с телефона")
+                }
+            }
+        } else {
+            Tile(VIcons.Download, "Скачать", "Будет играть без сети") {
+                act {
+                    Downloads.add(listOf(track), Downloads.MANUAL)
+                    VolnaPlayer.say(Downloads.queued(track.title))
+                }
+            }
+        }
         if (track.albumId.isNotEmpty()) Tile(VIcons.Album, "Перейти к альбому") { act { navigate(Screen.Entity("album", track.albumId)) } }
         if (track.artistId.isNotEmpty()) Tile(VIcons.Artist, "Перейти к артисту") { act { navigate(Screen.Entity("artist", track.artistId)) } }
     }
@@ -627,10 +675,25 @@ private fun likeTrack(track: Track) {
         VolnaPlayer.like()
         return
     }
+    val liked = !track.liked
+    val done = if (liked) "Добавлено в «Мне нравится»" else "Убрано из «Мне нравится»"
+    Downloads.liked(listOf(track), liked)
+    if (!Offline.isOnline) { // отметка уйдёт на сервер, когда будет связь
+        Offline.like("track", track.id, liked)
+        VolnaPlayer.say(done)
+        return
+    }
     MainScope().launch {
-        runCatching { VolnaPlayer.api.like("track", track.id, !track.liked) }
-            .onSuccess { VolnaPlayer.say(if (track.liked) "Убрано из «Мне нравится»" else "Добавлено в «Мне нравится»") }
-            .onFailure { VolnaPlayer.say(it.message ?: "Не удалось отметить трек") }
+        try {
+            VolnaPlayer.api.like("track", track.id, liked)
+            VolnaPlayer.say(done)
+        } catch (e: ApiException) {
+            Downloads.liked(listOf(track), !liked)
+            VolnaPlayer.say(e.message ?: "Не удалось отметить трек")
+        } catch (e: java.io.IOException) {
+            Offline.like("track", track.id, liked)
+            VolnaPlayer.say(done)
+        }
     }
 }
 

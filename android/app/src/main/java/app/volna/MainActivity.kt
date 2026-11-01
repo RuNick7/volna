@@ -40,9 +40,19 @@ import androidx.core.content.ContextCompat
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import app.volna.data.Track
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
+import app.volna.player.Offline
 import app.volna.player.PlaybackService
 import app.volna.player.VolnaPlayer
 import app.volna.ui.ConnectScreen
+import app.volna.ui.DownloadedScreen
+import app.volna.ui.VIcon
+import app.volna.ui.VIcons
 import app.volna.ui.AddArtistScreen
 import app.volna.ui.CoverStyle
 import app.volna.ui.EntityScreen
@@ -136,6 +146,8 @@ private fun VolnaRoot() {
     var tuneOpen by remember { mutableStateOf(false) }
     val activity = LocalContext.current as? Activity
     LaunchedEffect(Unit) { // первый вход в Volna: сначала любимые артисты и предпочтения
+        Offline.sync() // что держать скачанным: «Мне нравится», запас (не чаще раза в 6 часов)
+        if (!Offline.isOnline) return@LaunchedEffect
         runCatching { VolnaPlayer.api.onboarding() }.onSuccess { if (!it.done) Onboarding.show = true }
     }
     LaunchedEffect(Shared.url) {
@@ -162,9 +174,11 @@ private fun VolnaRoot() {
                     Screen.Queue -> QueueScreen(nav) { actionsFor = it }
                     is Screen.Import -> ImportScreen(screen.url, nav)
                     Screen.AddArtist -> AddArtistScreen(nav)
+                    Screen.Downloaded -> DownloadedScreen(nav) { actionsFor = it }
                     is Screen.SettingsPage -> SettingsPage(screen.key, nav)
                 }
             }
+            OfflineBar { nav.go(Screen.Downloaded) }
             if (nav.current != Screen.Home && state.track != null) MiniPlayer { nav.go(Screen.Home) }
             TabBar(nav.tab) { nav.tab(it) }
         }
@@ -180,6 +194,27 @@ private fun VolnaRoot() {
                 VolnaPlayer.shake()
             })
         }
+    }
+}
+
+/** Полоска над мини-плеером, пока нет связи или включён офлайн-режим. */
+@Composable
+private fun OfflineBar(onOpen: () -> Unit) {
+    val online by Offline.online.collectAsState()
+    val forced by Offline.forced.collectAsState()
+    if (online) return
+    Row(
+        Modifier.fillMaxWidth().background(Palette.Veil).clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        VIcon(VIcons.Offline, null, 16.dp, Palette.Muted)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (forced) "Офлайн-режим · играет скачанное" else "Нет связи · играет скачанное",
+            style = MaterialTheme.typography.bodySmall,
+            color = Palette.Muted,
+        )
     }
 }
 

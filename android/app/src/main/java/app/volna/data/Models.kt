@@ -25,6 +25,11 @@ data class Track(
     val reason: String,
     val trackNo: Int,
 ) {
+    /** Обратно в JSON того же вида, что отдаёт сервис: так скачанное хранится без сети. */
+    fun json(): JSONObject = JSONObject().put("id", id).put("title", title).put("artist", artist).put("album", album)
+        .put("album_id", albumId).put("artist_id", artistId).put("duration", duration).put("liked", liked)
+        .put("stream", stream).put("cover", cover).put("track_no", trackNo)
+
     companion object {
         fun from(o: JSONObject) = Track(
             id = o.getString("id"),
@@ -57,6 +62,9 @@ data class Item(
     val artistId: String,
     val year: Int,
 ) {
+    fun json(): JSONObject = JSONObject().put("type", type).put("id", id).put("title", title).put("subtitle", subtitle)
+        .put("cover", cover).put("liked", liked).put("count", count).put("artist_id", artistId).put("year", year)
+
     companion object {
         fun from(o: JSONObject) = Item(
             type = o.str("type"),

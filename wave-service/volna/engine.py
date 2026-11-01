@@ -107,13 +107,15 @@ def register_playback(
     source: str = "manual",
     cluster: int | None = None,
     device: str = "",
+    ts: float | None = None,
 ) -> None:
     """Любое прослушивание (в волне, альбоме, плейлисте): в базу, в Navidrome и в профиль."""
+    ts = ts or time.time()
     if track is None and taste is not None:
         track = taste.track_info.get(track_id)
     deps.store.add_event(
         Event(
-            ts=time.time(), track_id=track_id, kind=kind, artist=track.artist if track else "",
+            ts=ts, track_id=track_id, kind=kind, artist=track.artist if track else "",
             session=session, position=position, duration=duration, mode=mode, source=source,
             cluster=cluster, album_id=track.album_id if track else "", artist_id=track.artist_id if track else "",
             context_type=context_type, context_id=context_id, device=device,
@@ -121,7 +123,7 @@ def register_playback(
     )
     threshold = min(240.0, 0.5 * duration) if duration else 240.0
     if kind == "complete" or position >= threshold:
-        deps.run_io(deps.library.scrobble, track_id, submission=True, time_ms=int(time.time() * 1000))
+        deps.run_io(deps.library.scrobble, track_id, submission=True, time_ms=int(ts * 1000))
     if kind == "dislike":
         deps.run_io(deps.library.set_rating, track_id, 1)
     if taste is not None:

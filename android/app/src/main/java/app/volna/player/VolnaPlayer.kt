@@ -8,6 +8,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -47,6 +48,7 @@ data class PlayerState(
     val fromQueue: Boolean = false, // текущий трек — из очереди
     val upNext: List<Track> = emptyList(), // что будет после очереди: волна или остаток списка
     val source: String = "", // откуда upNext: «Моя волна», название альбома…
+    val offline: Boolean = false, // играет волна из скачанного: связи нет
 )
 
 /**
@@ -63,6 +65,9 @@ data class PlayerState(
  * Очередь, как в Spotify: добавленные вручную треки играют раньше волны и списка. Уходя
  * с трека волны в очередь, сообщаем серверу, чем он кончился, а его следующий трек
  * откладываем (resume) — с него волна и продолжится, когда очередь закончится.
+ *
+ * Без сети волна играет скачанное (список OFFLINE), списки — только скачанные треки, а
+ * прослушивания и лайки копятся в Offline и уходят на сервер, когда связь вернётся.
  */
 object VolnaPlayer {
     private val scope = MainScope()
@@ -104,8 +109,15 @@ object VolnaPlayer {
             override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
                 DefaultAudioSink.Builder(context).setAudioProcessors(arrayOf(TeeAudioProcessor(AudioLevel))).build()
         }
+        // скачанное играет из кэша загрузок, остальное — потоком с сервиса (тоже с токеном);
+        // сам плеер в кэш не пишет, это делает только загрузчик
+        val sources = CacheDataSource.Factory()
+            .setCache(Downloads.cache)
+            .setUpstreamDataSourceFactory(OkHttpDataSource.Factory(api.client))
+            .setCacheWriteDataSinkFactory(null)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         exo = ExoPlayer.Builder(context, renderers)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(api.client))) // звук тоже с токеном
+            .setMediaSourceFactory(DefaultMediaSourceFactory(sources))
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
                 true, // аудиофокус: звонок и навигатор ставят на паузу
@@ -125,6 +137,12 @@ object VolnaPlayer {
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                val network = error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+                if ((network || !Offline.isOnline) && this@VolnaPlayer.context != OFFLINE && Downloads.hasAny()) {
+                    startOffline("Нет связи — играю скачанное")
+                    return
+                }
                 say("Трек не воспроизводится, беру следующий")
                 next("error")
             }
@@ -159,6 +177,7 @@ object VolnaPlayer {
     }
 
     fun startWave(seedType: String? = null, seedId: String? = null) {
+        if (!Offline.isOnline) return startOffline(if (seedType != null) "Нет связи: играю скачанное" else null)
         history.clear()
         forward.clear()
         leaveQueue() // новая волна начинается сразу; добавленное в очередь сыграет после её первого трека
@@ -167,8 +186,10 @@ object VolnaPlayer {
         scope.launch {
             try {
                 applyWave(api.startWave(seedType, seedId))
-            } catch (e: IOException) {
+            } catch (e: ApiException) {
                 say(problem(e))
+            } catch (e: IOException) {
+                if (Downloads.hasAny()) startOffline("Нет связи — играю скачанное") else say(problem(e))
             } finally {
                 loading = false
                 publish()
@@ -178,19 +199,54 @@ object VolnaPlayer {
 
     fun playList(tracks: List<Track>, start: Int, context: PlayContext) {
         if (tracks.isEmpty()) return
+        var from = start.coerceIn(0, tracks.lastIndex)
+        var playable = tracks
+        if (!Offline.isOnline) { // без сети — только скачанное, начиная с выбранного или следующего за ним
+            playable = tracks.filter { Downloads.isDone(it.id) }
+            if (playable.isEmpty()) return say(Offline.NOT_DOWNLOADED)
+            val after = tracks.drop(from).firstOrNull { Downloads.isDone(it.id) }
+            from = playable.indexOf(after).coerceAtLeast(0)
+        }
         mode = "list"
         session = null
         history.clear()
         forward.clear()
-        list = tracks
-        index = start.coerceIn(0, tracks.lastIndex)
+        list = playable
+        index = from
         this.context = context
         leaveQueue()
         load(list[index])
     }
 
-    fun shuffle(tracks: List<Track>, context: PlayContext) = playList(tracks.shuffled(), 0, context)
+    fun shuffle(tracks: List<Track>, context: PlayContext) =
+        playList((if (Offline.isOnline) tracks else tracks.filter { Downloads.isDone(it.id) }).shuffled(), 0, context)
 
+    /** Волна без сети: скачанное вперемешку, лайкнутое и запас — чаще. */
+    fun startOffline(note: String? = null) {
+        val tracks = Downloads.wave(history.map { it.id }.toSet() + listOfNotNull(current?.id))
+        if (tracks.isEmpty()) {
+            if (exo.isPlaying) exo.pause()
+            say("Нет связи, а скачанных треков нет: скачайте музыку, пока сеть есть")
+            return
+        }
+        playList(tracks, 0, OFFLINE)
+        note?.let(::say)
+    }
+
+    /** Связь пропала посреди волны: скачанный текущий трек доигрывает, дальше — скачанное. */
+    private fun goOffline(playing: Track?) {
+        if (playing == null || !Downloads.isDone(playing.id)) return startOffline("Нет связи — играю скачанное")
+        mode = "list"
+        session = null
+        forward.clear()
+        context = OFFLINE
+        list = listOf(playing) + Downloads.wave(history.map { it.id }.toSet()).filter { it.id != playing.id }
+        index = 0
+        current = playing
+        refreshTail()
+        publish()
+        say("Нет связи — дальше скачанное")
+    }
     // --- переключение ---
 
     /** Трек закончился, пропущен, «не нравится» или не играет (error — без обучения). */
@@ -212,6 +268,11 @@ object VolnaPlayer {
                         report(track, outcome, position, duration, QUEUE)
                         remember(track)
                         afterQueued()
+                    }
+                    mode == "wave" && !Offline.isOnline -> {
+                        report(track, outcome, position, duration, PlayContext("other"))
+                        remember(track)
+                        startOffline("Нет связи — играю скачанное")
                     }
                     mode == "wave" -> {
                         val data = api.advance(session ?: return@launch, track.id, outcome, position, duration)
@@ -241,7 +302,11 @@ object VolnaPlayer {
             } catch (e: ApiException) {
                 if (e.code == 404 && mode == "wave") startWave() else say(problem(e))
             } catch (e: IOException) {
-                say(problem(e))
+                if (mode == "wave" && !replaying && !fromQueue) { // волна не ответила: сервер узнает о треке позже
+                    report(track, outcome, position, duration, PlayContext("other"))
+                    remember(track)
+                }
+                if (Downloads.hasAny()) startOffline("Нет связи — играю скачанное") else say(problem(e))
             } finally {
                 busy = false
             }
@@ -293,7 +358,9 @@ object VolnaPlayer {
         val track = current ?: return
         val liked = !track.liked
         current = track.copy(liked = liked)
+        Downloads.liked(listOf(track), liked)
         publish()
+        if (!Offline.isOnline) return Offline.like("track", track.id, liked) // уйдёт на сервер, когда будет связь
         scope.launch {
             try {
                 val session = session
@@ -302,9 +369,13 @@ object VolnaPlayer {
                 } else {
                     api.like("track", track.id, liked)
                 }
-            } catch (e: IOException) {
+            } catch (e: ApiException) {
                 current = current?.copy(liked = !liked)
+                Downloads.liked(listOf(track), !liked)
+                publish()
                 say(problem(e))
+            } catch (e: IOException) {
+                Offline.like("track", track.id, liked)
             }
         }
     }
@@ -462,6 +533,8 @@ object VolnaPlayer {
     }
 
     private suspend fun continueAfterList() {
+        if (!Offline.isOnline) return startOffline(if (context == OFFLINE) null else "Список закончился — дальше скачанное")
+        if (context == OFFLINE) return startWave() // связь вернулась: снова настоящая волна
         val keepGoing = runCatching { api.preferences().optBoolean("continue_after_end", true) }.getOrDefault(true)
         if (!keepGoing) {
             exo.pause()
@@ -564,6 +637,11 @@ object VolnaPlayer {
                 refreshTail()
                 publish()
             }
+            mode == "wave" && !Offline.isOnline -> {
+                report(finished, "complete", duration, duration, PlayContext("other"))
+                remember(finished)
+                goOffline(upcoming.firstOrNull { it.id == item?.mediaId })
+            }
             mode == "wave" -> {
                 remember(finished)
                 val session = session ?: return
@@ -579,8 +657,11 @@ object VolnaPlayer {
                         } else {
                             applyWave(data)
                         }
-                    } catch (e: IOException) {
+                    } catch (e: ApiException) {
                         say(problem(e))
+                    } catch (e: IOException) {
+                        report(finished, "complete", duration, duration, PlayContext("other"))
+                        goOffline(upcoming.firstOrNull { it.id == item?.mediaId })
                     }
                 }
             }
@@ -645,8 +726,17 @@ object VolnaPlayer {
 
     private fun report(track: Track, outcome: String, position: Double, duration: Double, context: PlayContext?) {
         if (outcome == "error") return
+        val type = context?.type ?: "other"
+        val id = context?.id.orEmpty()
+        if (!Offline.isOnline) return Offline.event(track.id, outcome, position, duration, type, id)
         scope.launch {
-            runCatching { api.event(track.id, outcome, position, duration, context?.type ?: "other", context?.id.orEmpty()) }
+            try {
+                api.event(track.id, outcome, position, duration, type, id)
+            } catch (_: ApiException) {
+                // сервис не принял — повторять незачем
+            } catch (_: IOException) {
+                Offline.event(track.id, outcome, position, duration, type, id)
+            }
         }
     }
 
@@ -655,21 +745,26 @@ object VolnaPlayer {
         return if (duration > 0 && exo.currentMediaItem?.mediaId == track.id) duration / 1000.0 else track.duration
     }
 
-    private fun mediaItem(track: Track): MediaItem = MediaItem.Builder()
-        .setMediaId(track.id)
-        .setUri(api.url(track.stream))
-        .setMediaMetadata(
+    private fun mediaItem(track: Track): MediaItem {
+        val item = MediaItem.Builder()
+            .setMediaId(track.id)
+            .setUri(api.url(track.stream))
+        // скачан до конца — играет из загрузок; недокачанный не читаем, чтобы не смешать качество
+        if (Downloads.isDone(track.id)) item.setCustomCacheKey(Downloads.key(track.id))
+        val artwork = Downloads.cover(track.cover)?.let(Uri::fromFile) ?: track.cover.takeIf { it.isNotEmpty() }?.let { Uri.parse(api.url(it)) }
+        return item.setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(track.title)
                 .setArtist(track.artist)
                 .setAlbumTitle(track.album)
-                .setArtworkUri(track.cover.takeIf { it.isNotEmpty() }?.let { Uri.parse(api.url(it)) })
+                .setArtworkUri(artwork)
                 .build(),
-        )
-        .build()
+        ).build()
+    }
 
     private fun reason(): String {
         val context = context
+        if (context == OFFLINE && !replaying && !fromQueue) return "Без сети · из скачанного"
         if (mode == "list" && !replaying && context != null && context.title.isNotEmpty()) {
             val label = mapOf("album" to "Альбом", "playlist" to "Плейлист", "artist" to "Артист", "search" to "Поиск", "library" to "Коллекция")
             return "${label[context.type] ?: "Сейчас"}: ${context.title}"
@@ -696,10 +791,12 @@ object VolnaPlayer {
             fromQueue = fromQueue,
             upNext = upNext().take(20),
             source = source(),
+            offline = context == OFFLINE,
         )
     }
 
     private val QUEUE = PlayContext("queue")
+    private val OFFLINE = PlayContext("library", "offline", "Скачанное")
 
     private fun problem(e: IOException): String = when (e) {
         is ApiException -> e.message ?: "Ошибка сервиса"

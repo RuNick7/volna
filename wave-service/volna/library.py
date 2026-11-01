@@ -7,7 +7,7 @@ import random
 import re
 import time
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
 
 from .models import Entity, LibrarySnapshot, Playlist, Track
@@ -24,16 +24,47 @@ CYRILLIC = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъы�
     "a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "i", "k", "l", "m", "n", "o", "p", "r", "s", "t", "u",
     "f", "h", "ts", "ch", "sh", "sch", "", "i", "", "e", "yu", "ya"]))
 _EXTRA = re.compile(r"\s[-–—]\s.*\b(remaster\w*|version|edit|live|mono|stereo|mix|demo|acoustic)\b.*$")
+_FEAT = re.compile(r"[\(\[]\s*(feat|ft|with)\b[^\)\]]*[\)\]]|\s(feat|ft)\.?\s.*$", re.I)
+_CREDITS = re.compile(r"\s*(?:,|;|&|•|\bfeat\.?|\bft\.?)\s*", re.I)
+
+
+def _plain(text: str) -> str:
+    """Без пунктуации и регистра, кириллица латиницей («Макс Корж» = «Max Korzh»)."""
+    s = "".join(CYRILLIC.get(c, c) for c in text.casefold())
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if c.isalnum())
+    return s.replace("kh", "h").replace("x", "ks").replace("y", "i").replace("j", "i")
 
 
 def skeleton(text: str) -> str:
-    """Название для сравнения между источниками: «Song (feat. X) - Remastered 2011» = «Song»,
-    без пунктуации и регистра, кириллица латиницей («Макс Корж» = «Max Korzh»)."""
-    s = re.sub(r"[\(\[].*?[\)\]]", " ", text.casefold())
-    s = _EXTRA.sub("", s)
-    s = "".join(CYRILLIC.get(c, c) for c in s)
-    s = "".join(c for c in unicodedata.normalize("NFKD", s) if c.isalnum())
-    return s.replace("kh", "h").replace("x", "ks").replace("y", "i").replace("j", "i")
+    """Название для сравнения между источниками: «Song (feat. X) - Remastered 2011» = «Song»."""
+    return _plain(_EXTRA.sub("", re.sub(r"[\(\[].*?[\)\]]", " ", text.casefold())))
+
+
+def duplicate_copies(songs: list[Track]) -> dict[str, str]:
+    """Одна песня в нескольких копиях (альбом и сингл, разные источники): лишняя копия → основная.
+
+    Копии — тот же основной исполнитель, то же название без «feat.» («(Live)», «(Remix)» — уже
+    другая песня) и длительность в пределах 3 секунд. Основная — из альбома, где больше треков,
+    потом самая слушаемая.
+    """
+    album_size = Counter(t.album_id for t in songs)
+    groups: dict[tuple[str, str], list[Track]] = defaultdict(list)
+    for t in songs:
+        key = (_plain(_CREDITS.split(t.artist)[0]), _plain(_FEAT.sub(" ", t.title)))
+        if all(key):
+            groups[key].append(t)
+    copies: dict[str, str] = {}
+    for tracks in groups.values():
+        if len(tracks) < 2:
+            continue
+        kept: list[Track] = []
+        for t in sorted(tracks, key=lambda t: (-album_size[t.album_id], -t.play_count, not t.starred, t.id)):
+            twin = next((k for k in kept if abs(k.duration - t.duration) <= 3), None)
+            if twin is None:
+                kept.append(t)
+            else:
+                copies[t.id] = twin.id
+    return copies
 
 
 def cover_url(cover_id: str) -> str:
@@ -76,6 +107,7 @@ class LibraryIndex:
         self.album_last = {aid: max((t.last_played or 0.0) for t in ts) for aid, ts in self.by_album.items()}
         self.artist_plays = {aid: sum(t.play_count for t in ts) for aid, ts in self.by_artist.items()}
         self._by_title: dict[str, list[Track]] | None = None  # для find(): собирается при первом импорте
+        self.copies = duplicate_copies(snapshot.songs)  # лишняя копия песни → основная: в списках не показываем
         self.albums_by_artist: dict[str, list[Entity]] = defaultdict(list)
         for a in snapshot.albums:
             artist_id = a.artist_id or (self.by_album[a.id][0].artist_id if self.by_album.get(a.id) else "")
@@ -144,7 +176,9 @@ class LibraryIndex:
         return [self.playlist_json(p) for p in self.snapshot.playlists]
 
     def liked_tracks(self) -> list[Track]:
-        return sorted((t for t in self.snapshot.songs if t.starred), key=lambda t: -(t.starred_at or 0))
+        liked = {t.id for t in self.snapshot.songs if t.starred}
+        return sorted((t for t in self.snapshot.songs if t.starred and self.copies.get(t.id) not in liked),
+                      key=lambda t: -(t.starred_at or 0))
 
     def recent_tracks(self, limit: int = 50) -> list[Track]:
         played = [t for t in self.snapshot.songs if t.last_played]
@@ -156,6 +190,7 @@ class LibraryIndex:
         pool = [
             t for t in self.snapshot.songs
             if (t.starred or t.play_count >= 3) and t.rating != 1 and now - (t.last_played or 0) > FORGOTTEN_AFTER
+            and t.id not in self.copies
         ]
         random.Random(date.today().toordinal()).shuffle(pool)  # своя подборка на каждый день
         return pool[:limit]
@@ -176,6 +211,8 @@ class LibraryIndex:
     def artist_page(self, artist_id: str) -> dict | None:
         artist = self.artists.get(artist_id)
         tracks = self.by_artist.get(artist_id, [])
+        own = {t.id for t in tracks}
+        tracks = [t for t in tracks if self.copies.get(t.id) not in own]  # сингл, если та же песня есть в альбоме
         if artist is None and not tracks:
             return None
         if artist is None:
@@ -235,7 +272,7 @@ class LibraryIndex:
             return 0 if n == q else 1 if n.startswith(q) else 2 if q in n else 3
 
         tracks = sorted(
-            (t for t in self.snapshot.songs if q in normalize(f"{t.title} {t.artist} {t.album}")),
+            (t for t in self.snapshot.songs if t.id not in self.copies and q in normalize(f"{t.title} {t.artist} {t.album}")),
             key=lambda t: (rank(t.title), -t.play_count),
         )[:30]
         albums = sorted((a for a in self.snapshot.albums if q in normalize(f"{a.name} {a.artist}")),

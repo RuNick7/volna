@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .library import duplicate_copies
 from .models import LibrarySnapshot, Track
 from .services import Deps
 from .store import Event
@@ -104,6 +105,7 @@ class TasteProfile:
     signals: dict[str, int] = field(default_factory=dict)
     cold_start: bool = False
     built_at: float = 0.0
+    hidden: set[str] = field(default_factory=set)  # лишние копии песен: в волну не ставим
 
     def __post_init__(self) -> None:
         self.centers = np.stack([c.center for c in self.clusters])
@@ -327,6 +329,7 @@ def build_profile(
         banned_artists=s["banned_artists"],
         banned_albums=s["banned_albums"],
         track_info=info,
+        hidden=set(duplicate_copies(snapshot.songs)),
         signals={
             "tracks": len(snapshot.songs),
             "played_tracks": sum(1 for t in snapshot.songs if t.play_count > 0),
@@ -381,6 +384,7 @@ def build_context_profile(deps: Deps, track_ids: list[str], taste: TasteProfile)
         banned_artists=taste.banned_artists,
         banned_albums=taste.banned_albums,
         track_info=info,
+        hidden=taste.hidden,
         signals=taste.signals,
         built_at=time.time(),
     )

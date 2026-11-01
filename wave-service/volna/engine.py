@@ -669,8 +669,8 @@ class WaveSession:
         allowed = []
         for i in ids:
             t = tracks.get(i)
-            if t is None or i not in vecs:
-                continue
+            if t is None or i not in vecs or i in self.taste.hidden:
+                continue  # нет звучания или это лишняя копия песни, которая есть в альбоме
             if t.rating == 1:
                 self.taste.disliked.add(i)
                 continue
